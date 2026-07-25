@@ -15,10 +15,11 @@ import (
 var version = "dev"
 
 var rootCmd = &cobra.Command{
-	Use:     "ike",
-	Short:   "ike — an Eisenhower matrix task manager",
-	Long:    "ike is a terminal Eisenhower matrix: run it bare for the interactive TUI,\nor use subcommands for quick capture and scripting.",
-	Version: version,
+	Use:          "ike",
+	Short:        "ike — an Eisenhower matrix task manager",
+	Long:         "ike is a terminal Eisenhower matrix: run it bare for the interactive TUI,\nor use subcommands for quick capture and scripting.",
+	Version:      version,
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := openStore()
 		if err != nil {
