@@ -1,0 +1,37 @@
+// Package cli defines ike's command-line interface. The bare `ike` command
+// launches the TUI; subcommands provide scriptable access to the same store.
+package cli
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+
+	"github.com/joncrockett/ike/internal/store"
+)
+
+// version is stamped at build time via -ldflags "-X ...cli.version=...".
+var version = "dev"
+
+var rootCmd = &cobra.Command{
+	Use:     "ike",
+	Short:   "ike — an Eisenhower matrix task manager",
+	Long:    "ike is a terminal Eisenhower matrix: run it bare for the interactive TUI,\nor use subcommands for quick capture and scripting.",
+	Version: version,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println("TUI not implemented yet — use `ike --help` for subcommands")
+		return nil
+	},
+}
+
+func openStore() (*store.Store, error) {
+	return store.Open()
+}
+
+// Execute runs the CLI and exits non-zero on error.
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
