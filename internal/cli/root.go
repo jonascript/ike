@@ -3,12 +3,12 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/joncrockett/ike/internal/store"
+	"github.com/joncrockett/ike/internal/tui"
 )
 
 // version is stamped at build time via -ldflags "-X ...cli.version=...".
@@ -20,8 +20,11 @@ var rootCmd = &cobra.Command{
 	Long:    "ike is a terminal Eisenhower matrix: run it bare for the interactive TUI,\nor use subcommands for quick capture and scripting.",
 	Version: version,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("TUI not implemented yet — use `ike --help` for subcommands")
-		return nil
+		s, err := openStore()
+		if err != nil {
+			return err
+		}
+		return tui.Run(s)
 	},
 }
 
