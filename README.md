@@ -1,7 +1,15 @@
-# ike
+<p align="center">
+  <img src="assets/logo.svg" width="190" alt="Portrait of Dwight D. Eisenhower in a circular badge with five stars">
+</p>
 
-An Eisenhower matrix task manager for the terminal, named for the president who
-popularized the method. One binary, three ways in:
+<h1 align="center">ike</h1>
+
+<p align="center"><em>The Eisenhower matrix, in your terminal.</em></p>
+
+---
+
+An Eisenhower matrix task manager, named for the president who popularized the
+method ("Ike" was his campaign-era nickname). One binary, three ways in:
 
 - **TUI** — run `ike` for an interactive 4-quadrant matrix
 - **CLI** — `ike add`, `ike done`, … for quick capture and scripting
@@ -13,8 +21,8 @@ All three share a single JSON data file, safe against concurrent writes.
 
 | | Urgent | Not urgent |
 |---|---|---|
-| **Important** | 1 · Do | 2 · Schedule |
-| **Not important** | 3 · Delegate | 4 · Eliminate |
+| **Important** | 1 · Do — Emergencies | 2 · Schedule — Planning |
+| **Not important** | 3 · Delegate — Interruptions | 4 · Eliminate — Time-wasters |
 
 ## Install
 
@@ -87,3 +95,8 @@ run at the same time without losing updates.
 
 Linux and macOS are supported; Windows is untested (path resolution assumes
 XDG conventions).
+
+---
+
+*Logo based on Eisenhower's official White House portrait (May 29, 1959), a
+U.S. government work in the public domain.*
