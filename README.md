@@ -96,6 +96,10 @@ run at the same time without losing updates.
 Linux and macOS are supported; Windows is untested (path resolution assumes
 XDG conventions).
 
+## License
+
+[MIT](LICENSE)
+
 ---
 
 *Logo based on Eisenhower's official White House portrait (May 29, 1959), a
