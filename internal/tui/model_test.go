@@ -226,7 +226,8 @@ func TestRenderSmoke(t *testing.T) {
 	m.refreshFromStore(t)
 	out := m.render()
 
-	for _, want := range []string{"Do", "Schedule", "Delegate", "Eliminate", "visible task"} {
+	for _, want := range []string{"Do", "Schedule", "Delegate", "Eliminate", "visible task",
+		"Urgent", "Not urgent", "IMPORTANT"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q", want)
 		}

@@ -52,21 +52,63 @@ func (m Model) render() string {
 
 	footer := m.renderFooter()
 	footerH := lipgloss.Height(footer)
-	gridH := m.height - footerH
 
-	cellW := m.width / 2
+	const gutterW = 2               // vertical axis labels: letter + space
+	gridH := m.height - footerH - 1 // 1 row for the top axis labels
+
+	cellW := (m.width - gutterW) / 2
 	cellH := gridH / 2
+
+	axis := lipgloss.NewStyle().Bold(true).Foreground(m.dimColor())
+	header := strings.Repeat(" ", gutterW) +
+		axis.Render(center("Urgent", cellW)) +
+		axis.Render(center("Not urgent", cellW))
 
 	q1 := m.renderQuadrant(task.Do, cellW, cellH)
 	q2 := m.renderQuadrant(task.Schedule, cellW, cellH)
 	q3 := m.renderQuadrant(task.Delegate, cellW, cellH)
 	q4 := m.renderQuadrant(task.Eliminate, cellW, cellH)
 
+	topGutter := axis.Render(verticalLabel("IMPORTANT", cellH, gutterW))
+	botGutter := axis.Render(verticalLabel("NOT IMPORTANT", cellH, gutterW))
+
 	grid := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Top, q1, q2),
-		lipgloss.JoinHorizontal(lipgloss.Top, q3, q4),
+		lipgloss.JoinHorizontal(lipgloss.Top, topGutter, q1, q2),
+		lipgloss.JoinHorizontal(lipgloss.Top, botGutter, q3, q4),
 	)
-	return lipgloss.JoinVertical(lipgloss.Left, grid, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, grid, footer)
+}
+
+// center pads s to width w, centered.
+func center(s string, w int) string {
+	if len(s) >= w {
+		return s[:w]
+	}
+	left := (w - len(s)) / 2
+	return strings.Repeat(" ", left) + s + strings.Repeat(" ", w-len(s)-left)
+}
+
+// verticalLabel renders text one letter per line, vertically centered in
+// height rows and padded to width columns. If the text is too tall it falls
+// back to a short form, then to blank.
+func verticalLabel(text string, height, width int) string {
+	if len(text) > height {
+		short := map[string]string{"IMPORTANT": "IMP", "NOT IMPORTANT": "NOT IMP"}[text]
+		if len(short) > height {
+			short = ""
+		}
+		text = short
+	}
+	top := (height - len(text)) / 2
+	lines := make([]string, height)
+	for i := range lines {
+		ch := " "
+		if i >= top && i-top < len(text) {
+			ch = string(text[i-top])
+		}
+		lines[i] = ch + strings.Repeat(" ", width-1)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderQuadrant(q task.Quadrant, w, h int) string {
@@ -79,13 +121,13 @@ func (m Model) renderQuadrant(q task.Quadrant, w, h int) string {
 		border = lipgloss.ThickBorder()
 		borderColor = accent
 	}
+	// Width/Height are outer dimensions in lipgloss v2 (border included).
 	box := lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor).
 		Padding(0, 1).
-		Width(w - 2).  // border adds 2 columns
-		Height(h - 2). // border adds 2 rows
-		MaxWidth(w)
+		Width(w).
+		Height(h)
 
 	innerW := w - 4 // border (2) + padding (2)
 	header := ansi.Truncate(fmt.Sprintf("%d · %s — %s", q, q.Label(), q.Desc()), innerW, "…")
@@ -151,10 +193,11 @@ func (m Model) renderFooter() string {
 			"d twice delete permanently · v archive view · ? close help · q quit",
 		}, "\n")
 	}
-	return strings.Join([]string{
-		ansi.Truncate(status, m.width, "…"),
-		dim.Render(help),
-	}, "\n")
+	helpLines := strings.Split(help, "\n")
+	for i, l := range helpLines {
+		helpLines[i] = dim.Render(ansi.Truncate(l, m.width, "…"))
+	}
+	return strings.Join(append([]string{ansi.Truncate(status, m.width, "…")}, helpLines...), "\n")
 }
 
 func (m Model) renderArchive() string {

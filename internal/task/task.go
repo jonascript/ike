@@ -38,17 +38,18 @@ func (q Quadrant) Label() string {
 	return "?"
 }
 
-// Desc returns the urgency/importance description for the quadrant.
+// Desc returns the quadrant's descriptive nickname; the urgency/importance
+// axes are conveyed by the matrix layout itself.
 func (q Quadrant) Desc() string {
 	switch q {
 	case Do:
-		return "Urgent + Important"
+		return "Emergencies"
 	case Schedule:
-		return "Not Urgent"
+		return "Planning"
 	case Delegate:
-		return "Not Urgent"
+		return "Interruptions"
 	case Eliminate:
-		return "Not Important"
+		return "Time-wasters"
 	}
 	return ""
 }
