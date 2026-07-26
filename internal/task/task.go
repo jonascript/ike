@@ -44,11 +44,11 @@ func (q Quadrant) Desc() string {
 	case Do:
 		return "Urgent + Important"
 	case Schedule:
-		return "Important"
+		return "Not Urgent"
 	case Delegate:
-		return "Urgent"
+		return "Not Urgent"
 	case Eliminate:
-		return "Neither"
+		return "Not Important"
 	}
 	return ""
 }

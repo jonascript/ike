@@ -29,9 +29,9 @@ func TestQuadrantLabels(t *testing.T) {
 		desc  string
 	}{
 		{Do, "Do", "Urgent + Important"},
-		{Schedule, "Schedule", "Important"},
-		{Delegate, "Delegate", "Urgent"},
-		{Eliminate, "Eliminate", "Neither"},
+		{Schedule, "Schedule", "Not Urgent"},
+		{Delegate, "Delegate", "Not Urgent"},
+		{Eliminate, "Eliminate", "Not Important"},
 		{0, "?", ""},
 	}
 	for _, c := range cases {
