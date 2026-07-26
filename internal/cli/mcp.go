@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/joncrockett/ike/internal/mcpserver"
+	"github.com/jonascript/ike/internal/mcpserver"
 )
 
 func init() {

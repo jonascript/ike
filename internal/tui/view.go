@@ -9,7 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/joncrockett/ike/internal/task"
+	"github.com/jonascript/ike/internal/task"
 )
 
 const (

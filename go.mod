@@ -1,4 +1,4 @@
-module github.com/joncrockett/ike
+module github.com/jonascript/ike
 
 go 1.26.5
 

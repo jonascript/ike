@@ -18,7 +18,7 @@ import (
 
 	"github.com/gofrs/flock"
 
-	"github.com/joncrockett/ike/internal/task"
+	"github.com/jonascript/ike/internal/task"
 )
 
 const currentVersion = 1

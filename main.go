@@ -1,6 +1,6 @@
 package main
 
-import "github.com/joncrockett/ike/internal/cli"
+import "github.com/jonascript/ike/internal/cli"
 
 func main() {
 	cli.Execute()

@@ -8,7 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/joncrockett/ike/internal/store"
+	"github.com/jonascript/ike/internal/store"
 )
 
 // connect wires an in-process client to the server and returns a call helper.

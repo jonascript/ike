@@ -29,13 +29,13 @@ All three share a single JSON data file, safe against concurrent writes.
 Requires Go 1.24+.
 
 ```sh
-go install github.com/joncrockett/ike@latest
+go install github.com/jonascript/ike@latest
 ```
 
 Or from a checkout, with a stamped version:
 
 ```sh
-go build -ldflags "-X github.com/joncrockett/ike/internal/cli.version=$(git describe --tags --always)" -o ike .
+go build -ldflags "-X github.com/jonascript/ike/internal/cli.version=$(git describe --tags --always)" -o ike .
 ```
 
 ## TUI

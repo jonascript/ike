@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joncrockett/ike/internal/task"
+	"github.com/jonascript/ike/internal/task"
 )
 
 // Add creates a new task in the given quadrant and returns it.

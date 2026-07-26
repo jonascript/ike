@@ -7,8 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/joncrockett/ike/internal/store"
-	"github.com/joncrockett/ike/internal/task"
+	"github.com/jonascript/ike/internal/store"
+	"github.com/jonascript/ike/internal/task"
 )
 
 func testModel(t *testing.T) (Model, *store.Store) {

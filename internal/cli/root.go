@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/joncrockett/ike/internal/store"
-	"github.com/joncrockett/ike/internal/tui"
+	"github.com/jonascript/ike/internal/store"
+	"github.com/jonascript/ike/internal/tui"
 )
 
 // version is stamped at build time via -ldflags "-X ...cli.version=...".

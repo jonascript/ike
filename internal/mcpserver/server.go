@@ -7,8 +7,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/joncrockett/ike/internal/store"
-	"github.com/joncrockett/ike/internal/task"
+	"github.com/jonascript/ike/internal/store"
+	"github.com/jonascript/ike/internal/task"
 )
 
 const quadrantDoc = "Eisenhower quadrant: 1=Do (urgent+important), 2=Schedule (important, not urgent), 3=Delegate (urgent, not important), 4=Eliminate (neither)"

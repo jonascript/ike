@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/joncrockett/ike/internal/task"
+	"github.com/jonascript/ike/internal/task"
 )
 
 func testStore(t *testing.T) *Store {
