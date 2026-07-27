@@ -1,0 +1,106 @@
+# goreleaser configuration for ike.
+#
+# This produces the release archives for people who do not use Homebrew —
+# direct downloads and checksums. It deliberately does NOT generate a Homebrew
+# package:
+#
+#   - goreleaser's `brews:` (formula) support is deprecated as of v2.10 in
+#     favour of `homebrew_casks:`.
+#   - A cask is the wrong target here. Homebrew is disabling every cask that
+#     fails a macOS Gatekeeper check on 2026-09-01 and removing the
+#     --no-quarantine escape hatch, so shipping unsigned prebuilt macOS
+#     binaries as a cask is a dead end without an Apple Developer account and
+#     notarization in CI.
+#   - Homebrew's own guidance is that open-source, command-line-only software
+#     belongs in a formula built from source. That compiles locally, so no
+#     quarantine attribute is ever applied and Gatekeeper never applies, and it
+#     works on Linuxbrew too, which casks do not.
+#
+# The formula therefore lives in packaging/ike.rb and builds from the tag
+# tarball. It does not consume anything produced here, so this file and the tap
+# can never fall out of step.
+version: 2
+
+project_name: ike
+
+before:
+  hooks:
+    - go mod tidy
+    - go build ./...
+
+builds:
+  - id: ike
+    main: .
+    binary: ike
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      # -X target matches the variable in internal/cli/root.go. Keep them in
+      # sync: a rename here silently produces binaries that report "dev".
+      - -s -w -X github.com/jonascript/ike/internal/cli.version={{ .Version }}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    # Windows is omitted on purpose: internal/store/path.go resolves the data
+    # file with XDG conventions only, so a Windows build would put tasks.json
+    # somewhere a Windows user would not expect. It compiles, but shipping it
+    # would imply support that has not been tested.
+
+archives:
+  - id: ike
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      # Required: the Apache-2.0 dependencies' attribution obligation attaches
+      # when compiled binaries are distributed, which is exactly what this is.
+      - THIRD_PARTY_LICENSES.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  draft: true
+  prerelease: auto
+  footer: |
+    ## Install
+
+    ```sh
+    brew install jonascript/tap/ike
+    ```
+
+    Or with Go:
+
+    ```sh
+    go install github.com/jonascript/ike@latest
+    ```
+
+    Binaries above are unsigned. Verify one against `checksums.txt`, and
+    optionally check its build provenance:
+
+    ```sh
+    gh attestation verify <file> --repo {{ .Env.GITHUB_REPOSITORY }}
+    ```

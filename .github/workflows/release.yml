@@ -1,0 +1,97 @@
+# Dormant until a v* tag is pushed. Nothing here runs on ordinary commits.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Job-level so the tap step's `if` can see it. A step's own `env:` block is
+    # not in scope for that step's `if`, which would make the step skip always.
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    permissions:
+      # Create the release and upload archives.
+      contents: write
+      # Mint build provenance so a downloaded binary can be verified with
+      # `gh attestation verify <file> --repo jonascript/ike`.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # goreleaser builds the changelog from git history.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # Never publish a release that would not have passed CI.
+      - name: Verify before releasing
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+
+      # The Homebrew formula builds from the tag tarball, so it needs that
+      # tarball's sha256 — which only exists once the tag is pushed. This is
+      # deliberately a separate, manual-ish step rather than goreleaser's
+      # deprecated `brews:` support.
+      #
+      # Requires HOMEBREW_TAP_TOKEN: a fine-grained PAT scoped to the tap repo
+      # alone with Contents: read/write. The default GITHUB_TOKEN cannot write
+      # to another repository. Until that secret exists this step is skipped,
+      # so the release itself still succeeds.
+      - name: Update the Homebrew tap
+        if: ${{ env.HOMEBREW_TAP_TOKEN != '' }}
+        env:
+          TAG: ${{ github.ref_name }}
+          TAP: jonascript/homebrew-tap
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL -o source.tar.gz "$url"
+          sha=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "tag=$TAG version=$version sha256=$sha"
+
+          git clone --depth 1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP}.git" tap
+          cp packaging/ike.rb tap/Formula/ike.rb
+          cd tap
+          sed -i -E "s|^  url \".*\"|  url \"${url}\"|" Formula/ike.rb
+          sed -i -E "s|^  sha256 \".*\"|  sha256 \"${sha}\"|" Formula/ike.rb
+
+          # Fail loudly rather than pushing a formula still holding a
+          # placeholder checksum.
+          grep -q "$sha" Formula/ike.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/ike.rb
+          if git diff --cached --quiet; then
+            echo "formula already current"
+            exit 0
+          fi
+          git commit -m "ike ${version}"
+          git push
