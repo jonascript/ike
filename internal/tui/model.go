@@ -318,7 +318,7 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				return m.store.Load()
 			})
-			m.status = fmt.Sprintf("done: %s", t.Title)
+			m.status = fmt.Sprintf("done: %s", t.DisplayTitle())
 		}
 
 	case key.Matches(msg, keys.Move):
@@ -337,10 +337,10 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					}
 					return m.store.Load()
 				})
-				m.status = fmt.Sprintf("deleted: %s", t.Title)
+				m.status = fmt.Sprintf("deleted: %s", t.DisplayTitle())
 			} else {
 				m.pendingDelete = t.ID
-				m.status = fmt.Sprintf("press d again to delete %q", t.Title)
+				m.status = fmt.Sprintf("press d again to delete %q", t.DisplayTitle())
 			}
 		}
 
@@ -421,7 +421,7 @@ func (m Model) handleMoveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				return m.store.Load()
 			})
-			m.status = fmt.Sprintf("moved to %d · %s", dest, dest.Label())
+			m.status = fmt.Sprintf("moved to %d · %s", dest, m.data.Labels.Of(dest))
 		}
 	}
 	return m, nil
@@ -445,7 +445,7 @@ func (m Model) handleArchiveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m.store.Load()
 			})
 			if m.status == "" {
-				m.status = fmt.Sprintf("restored %q to %d · %s", t.Title, t.Quadrant, t.Quadrant.Label())
+				m.status = fmt.Sprintf("restored %q to %d · %s", t.DisplayTitle(), t.Quadrant, m.data.Labels.Of(t.Quadrant))
 			}
 		}
 

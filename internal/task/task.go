@@ -28,6 +28,33 @@ func (q Quadrant) Valid() bool {
 // the TUI's quadrant headers out of their cells.
 const MaxLabelLen = 40
 
+// MaxTitleLen bounds a task title. The TUI's input widget caps what you can
+// type, but nothing constrained titles arriving from the CLI or from an MCP
+// client, and every undo snapshot clones the whole task list — so one huge
+// title is amplified across the entire history.
+const MaxTitleLen = 500
+
+// firstControlChar returns the first C0 or C1 control character in s, and
+// whether it found one.
+//
+// Every user- or agent-supplied string is checked, because ike renders them
+// straight into a terminal. An ESC (0x1b) in a stored title can repaint the
+// line, so `ike list` would display something other than what is stored —
+// which matters most when the title came from an agent, since that list is
+// how a human audits what the agent did. Other sequences reach further: OSC 52
+// writes the clipboard, OSC 0 rewrites the window title. A bare newline is
+// enough to fabricate a plausible extra row, or to break the TUI's box layout.
+// The --json output is already safe (encoding/json escapes these), but the
+// human-readable views are the ones people trust.
+func firstControlChar(s string) (rune, bool) {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return r, true
+		}
+	}
+	return 0, false
+}
+
 // Label returns the quadrant's default action name. Users can override these
 // per data file; see Data.QuadrantLabels in the store package, which falls
 // back to this.
@@ -48,14 +75,31 @@ func (q Quadrant) Label() string {
 // ValidateLabel checks a user-supplied quadrant label. A blank label is not an
 // error here — callers treat it as "reset to the default".
 func ValidateLabel(label string) error {
-	if len([]rune(label)) > MaxLabelLen {
+	if n := len([]rune(label)); n > MaxLabelLen {
 		return fmt.Errorf("quadrant label is %d characters; the maximum is %d",
-			len([]rune(label)), MaxLabelLen)
+			n, MaxLabelLen)
 	}
-	if strings.ContainsAny(label, "\n\r\t") {
-		return fmt.Errorf("quadrant label cannot contain line breaks or tabs")
+	if r, bad := firstControlChar(label); bad {
+		return fmt.Errorf("quadrant label cannot contain control characters (found %#U)", r)
 	}
 	return nil
+}
+
+// SanitizeDisplay replaces control characters with U+FFFD so a string is safe
+// to print into a terminal.
+//
+// Validate rejects these on the way in, which covers everything ike itself
+// writes. This is the matching guarantee on the way out, for text that never
+// passed through Validate: a file written by an older build, a hand edit, or a
+// copy arriving through a synced folder. Display integrity is the whole point
+// of the check, so it is enforced at both ends rather than trusting the file.
+func SanitizeDisplay(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return '�'
+		}
+		return r
+	}, s)
 }
 
 // Task is a single to-do item. Completed tasks keep their ID and gain a
@@ -68,6 +112,11 @@ type Task struct {
 	CreatedAt time.Time  `json:"created_at"`
 	DoneAt    *time.Time `json:"done_at,omitempty"`
 }
+
+// DisplayTitle is the title as it is safe to print into a terminal. Use it for
+// every human-facing render; --json output keeps the raw title, since
+// encoding/json escapes control characters itself.
+func (t Task) DisplayTitle() string { return SanitizeDisplay(t.Title) }
 
 // Less reports whether a sorts before b in display order: by quadrant, then
 // by rank within the quadrant, then by ID. Rank is assigned by the store; a
@@ -91,6 +140,12 @@ func SortOrder(ts []Task) {
 func Validate(title string, q Quadrant) error {
 	if strings.TrimSpace(title) == "" {
 		return fmt.Errorf("task title cannot be empty")
+	}
+	if n := len([]rune(title)); n > MaxTitleLen {
+		return fmt.Errorf("task title is %d characters; the maximum is %d", n, MaxTitleLen)
+	}
+	if r, bad := firstControlChar(title); bad {
+		return fmt.Errorf("task title cannot contain control characters (found %#U)", r)
 	}
 	if !q.Valid() {
 		return fmt.Errorf("quadrant must be 1-4, got %d", q)

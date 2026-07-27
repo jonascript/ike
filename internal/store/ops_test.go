@@ -802,3 +802,30 @@ func TestUpgradesVersionOneFile(t *testing.T) {
 		t.Errorf("on-disk version = %v, want %d", m["version"], currentVersion)
 	}
 }
+
+// Labels.Of is the single choke point every frontend renders a quadrant name
+// through, so it sanitizes. SetQuadrantLabel rejects control characters on the
+// way in; this covers a label that reached the file some other way — an older
+// build, a hand edit, or a synced copy.
+func TestLabelsOfSanitizesUntrustedFile(t *testing.T) {
+	l := Labels{task.Do: "red\x1b[31m", task.Schedule: "two\nlines"}
+
+	got := l.Of(task.Do)
+	if strings.ContainsRune(got, 0x1b) {
+		t.Errorf("Of(Do) = %q, still contains an escape", got)
+	}
+	if !strings.Contains(got, "red") {
+		t.Errorf("Of(Do) = %q, dropped visible text", got)
+	}
+	if got := l.Of(task.Schedule); strings.ContainsRune(got, '\n') {
+		t.Errorf("Of(Schedule) = %q, still contains a newline", got)
+	}
+	// An unrenamed quadrant still falls back to its default.
+	if got, want := l.Of(task.Delegate), task.Delegate.Label(); got != want {
+		t.Errorf("Of(Delegate) = %q, want the default %q", got, want)
+	}
+	// The stored label itself is untouched; only the rendered form changes.
+	if l[task.Do] != "red\x1b[31m" {
+		t.Error("Of must not rewrite the stored label")
+	}
+}

@@ -48,7 +48,7 @@ func printGrouped(tasks []task.Task, labels store.Labels) {
 		}
 		fmt.Printf("%d · %s\n", q, labels.Of(q))
 		for _, t := range byQ[q] {
-			fmt.Printf("  %3d  %s\n", t.ID, t.Title)
+			fmt.Printf("  %3d  %s\n", t.ID, t.DisplayTitle())
 		}
 	}
 }
@@ -68,7 +68,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("added %d [%s] %s\n", t.ID, quadrantLabels(s).Of(t.Quadrant), t.Title)
+			fmt.Printf("added %d [%s] %s\n", t.ID, quadrantLabels(s).Of(t.Quadrant), t.DisplayTitle())
 			return nil
 		},
 	}
@@ -121,7 +121,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("done %d  %s\n", t.ID, t.Title)
+			fmt.Printf("done %d  %s\n", t.ID, t.DisplayTitle())
 			return nil
 		},
 	}
@@ -169,7 +169,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("deleted %d  %s\n", t.ID, t.Title)
+			fmt.Printf("deleted %d  %s\n", t.ID, t.DisplayTitle())
 			return nil
 		},
 	}
@@ -191,7 +191,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("restored %d to %d · %s  %s\n", t.ID, t.Quadrant, quadrantLabels(s).Of(t.Quadrant), t.Title)
+			fmt.Printf("restored %d to %d · %s  %s\n", t.ID, t.Quadrant, quadrantLabels(s).Of(t.Quadrant), t.DisplayTitle())
 			return nil
 		},
 	}
@@ -352,7 +352,7 @@ func init() {
 				if t.DoneAt != nil {
 					when = t.DoneAt.Local().Format("2006-01-02")
 				}
-				fmt.Printf("  %3d  %s  %s\n", t.ID, when, t.Title)
+				fmt.Printf("  %3d  %s  %s\n", t.ID, when, t.DisplayTitle())
 			}
 			return nil
 		},

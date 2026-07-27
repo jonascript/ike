@@ -52,9 +52,13 @@ type Labels map[task.Quadrant]string
 // Of returns the display name for q — the custom label if one is set, else the
 // built-in default. It is safe to call on a nil Labels, which is the common
 // case, so frontends can always render with d.Labels.Of(q).
+//
+// The result is sanitized for terminal output, because Of is the single choke
+// point every frontend renders through: a label from a hand-edited or older
+// data file cannot repaint the screen.
 func (l Labels) Of(q task.Quadrant) string {
 	if custom, ok := l[q]; ok && custom != "" {
-		return custom
+		return task.SanitizeDisplay(custom)
 	}
 	return q.Label()
 }

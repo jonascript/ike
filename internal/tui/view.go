@@ -158,7 +158,7 @@ func (m Model) renderTaskLines(q task.Quadrant, w, visible int, focused bool) []
 	for i := offset; i < len(tasks) && i-offset < visible; i++ {
 		t := tasks[i]
 		marker := "  "
-		title := ansi.Truncate(t.Title, max(w-8, 4), "…")
+		title := ansi.Truncate(t.DisplayTitle(), max(w-8, 4), "…")
 		line := fmt.Sprintf("%s%s %s", marker, idStyle.Render(fmt.Sprintf("%3d", t.ID)), title)
 		if focused && i == m.cursor[q] {
 			line = selStyle.Render(fmt.Sprintf("▸ %3d %s", t.ID, title))
@@ -272,7 +272,7 @@ func (m Model) renderArchive() string {
 		if t.DoneAt != nil {
 			when = t.DoneAt.Local().Format("2006-01-02")
 		}
-		line := fmt.Sprintf("  %3d  %s  %s", t.ID, when, ansi.Truncate(t.Title, max(m.width-20, 4), "…"))
+		line := fmt.Sprintf("  %3d  %s  %s", t.ID, when, ansi.Truncate(t.DisplayTitle(), max(m.width-20, 4), "…"))
 		if i == m.archCursor {
 			line = lipgloss.NewStyle().Bold(true).Render("▸" + line[1:])
 		}
