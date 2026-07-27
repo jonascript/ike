@@ -4,6 +4,7 @@ package task
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -23,35 +24,38 @@ func (q Quadrant) Valid() bool {
 	return q >= Do && q <= Eliminate
 }
 
-// Label returns the short action name for the quadrant.
+// MaxLabelLen bounds a custom quadrant label, so one long name cannot push
+// the TUI's quadrant headers out of their cells.
+const MaxLabelLen = 40
+
+// Label returns the quadrant's default action name. Users can override these
+// per data file; see Data.QuadrantLabels in the store package, which falls
+// back to this.
 func (q Quadrant) Label() string {
 	switch q {
 	case Do:
-		return "Do"
+		return "Do It First"
 	case Schedule:
-		return "Schedule"
+		return "Schedule It"
 	case Delegate:
-		return "Delegate"
+		return "Delegate It"
 	case Eliminate:
-		return "Eliminate"
+		return "Consider Eliminating It"
 	}
 	return "?"
 }
 
-// Desc returns the quadrant's descriptive nickname; the urgency/importance
-// axes are conveyed by the matrix layout itself.
-func (q Quadrant) Desc() string {
-	switch q {
-	case Do:
-		return "Emergencies"
-	case Schedule:
-		return "Planning"
-	case Delegate:
-		return "Interruptions"
-	case Eliminate:
-		return "Time-wasters"
+// ValidateLabel checks a user-supplied quadrant label. A blank label is not an
+// error here — callers treat it as "reset to the default".
+func ValidateLabel(label string) error {
+	if len([]rune(label)) > MaxLabelLen {
+		return fmt.Errorf("quadrant label is %d characters; the maximum is %d",
+			len([]rune(label)), MaxLabelLen)
 	}
-	return ""
+	if strings.ContainsAny(label, "\n\r\t") {
+		return fmt.Errorf("quadrant label cannot contain line breaks or tabs")
+	}
+	return nil
 }
 
 // Task is a single to-do item. Completed tasks keep their ID and gain a
@@ -60,8 +64,27 @@ type Task struct {
 	ID        int        `json:"id"`
 	Title     string     `json:"title"`
 	Quadrant  Quadrant   `json:"quadrant"`
+	Rank      float64    `json:"rank,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	DoneAt    *time.Time `json:"done_at,omitempty"`
+}
+
+// Less reports whether a sorts before b in display order: by quadrant, then
+// by rank within the quadrant, then by ID. Rank is assigned by the store; a
+// zero rank means "not ranked yet" and falls back to ID order.
+func Less(a, b Task) bool {
+	if a.Quadrant != b.Quadrant {
+		return a.Quadrant < b.Quadrant
+	}
+	if a.Rank != b.Rank {
+		return a.Rank < b.Rank
+	}
+	return a.ID < b.ID
+}
+
+// SortOrder sorts tasks in place into display order.
+func SortOrder(ts []Task) {
+	sort.SliceStable(ts, func(i, j int) bool { return Less(ts[i], ts[j]) })
 }
 
 // Validate checks that a task's user-supplied fields are acceptable.

@@ -8,12 +8,18 @@ type keyMap struct {
 	PrevQuad key.Binding
 	Up       key.Binding
 	Down     key.Binding
+	MoveUp   key.Binding
+	MoveDown key.Binding
 	Add      key.Binding
 	Edit     key.Binding
+	Title    key.Binding
 	Done     key.Binding
 	Move     key.Binding
 	Delete   key.Binding
+	Undo     key.Binding
+	Redo     key.Binding
 	Archive  key.Binding
+	Restore  key.Binding
 	Help     key.Binding
 	Quit     key.Binding
 	Confirm  key.Binding
@@ -26,12 +32,18 @@ var keys = keyMap{
 	PrevQuad: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev quadrant")),
 	Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 	Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+	MoveUp:   key.NewBinding(key.WithKeys("shift+up", "K"), key.WithHelp("K", "move task up")),
+	MoveDown: key.NewBinding(key.WithKeys("shift+down", "J"), key.WithHelp("J", "move task down")),
 	Add:      key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
 	Edit:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
+	Title:    key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "rename quadrant")),
 	Done:     key.NewBinding(key.WithKeys("x", "enter"), key.WithHelp("x", "done")),
 	Move:     key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "move")),
 	Delete:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+	Undo:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "undo")),
+	Redo:     key.NewBinding(key.WithKeys("U", "ctrl+r"), key.WithHelp("U", "redo")),
 	Archive:  key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "archive")),
+	Restore:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restore")),
 	Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 	Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	Confirm:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),

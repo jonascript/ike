@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/jonascript/ike/internal/store"
 	"github.com/jonascript/ike/internal/task"
 )
 
@@ -130,7 +131,7 @@ func (m Model) renderQuadrant(q task.Quadrant, w, h int) string {
 		Height(h)
 
 	innerW := w - 4 // border (2) + padding (2)
-	header := ansi.Truncate(fmt.Sprintf("%d · %s — %s", q, q.Label(), q.Desc()), innerW, "…")
+	header := ansi.Truncate(fmt.Sprintf("%d · %s", q, m.data.Labels.Of(q)), innerW, "…")
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(accent)
 
 	lines := []string{headerStyle.Render(header)}
@@ -176,8 +177,11 @@ func (m Model) renderFooter() string {
 	var status string
 	switch m.mode {
 	case modeInput:
-		verb := fmt.Sprintf("add to %d · %s", m.focus, m.focus.Label())
-		if m.editingID != 0 {
+		verb := fmt.Sprintf("add to %d · %s", m.focus, m.data.Labels.Of(m.focus))
+		switch {
+		case m.labelTarget != 0:
+			verb = fmt.Sprintf("rename quadrant %d", m.labelTarget)
+		case m.editingID != 0:
 			verb = fmt.Sprintf("edit %d", m.editingID)
 		}
 		status = fmt.Sprintf("%s: %s", verb, m.input.View())
@@ -185,33 +189,74 @@ func (m Model) renderFooter() string {
 		status = m.status
 	}
 
-	help := "a add · e edit · x done · m move · d delete · v archive · 1-4/tab focus · ? help · q quit"
+	// Redo is only offered while there is something to redo — the next real
+	// change discards the stack, from any frontend.
+	undoHelp := "u undo"
+	if store.RedoLabel(m.data) != "" {
+		undoHelp = "u undo · U redo"
+	}
+	help := "a add · e edit · x done · m move · J/K reorder · d delete · " +
+		undoHelp + " · v archive · ? help · q quit"
 	if m.showHelp {
 		help = strings.Join([]string{
 			"1-4 focus quadrant · tab/shift+tab cycle · j/k or ↑/↓ select task",
-			"a add to focused quadrant · e edit title · x/enter complete · m then 1-4 move",
-			"d twice delete permanently · v archive view · ? close help · q quit",
+			"a add to focused quadrant · e edit title · x/enter complete · m then 1-4 move quadrant",
+			"t rename the focused quadrant (empty input restores its default name)",
+			"J/K or shift+↑/↓ reorder within quadrant · u undo last change (any frontend)",
+			"U or ctrl+r redo, until the next change discards it",
+			"d twice delete permanently · v archive view (r there restores) · ? close help · q quit",
+			m.mcpHelpLine(),
 		}, "\n")
 	}
 	helpLines := strings.Split(help, "\n")
 	for i, l := range helpLines {
 		helpLines[i] = dim.Render(ansi.Truncate(l, m.width, "…"))
 	}
-	return strings.Join(append([]string{ansi.Truncate(status, m.width, "…")}, helpLines...), "\n")
+	statusLine := ansi.Truncate(status, m.width, "…")
+	if m.mode != modeInput {
+		// Not while typing: the status row holds the text input then, and the
+		// marker would trail the cursor.
+		statusLine = m.withMCPIndicator(statusLine)
+	}
+	return strings.Join(append([]string{statusLine}, helpLines...), "\n")
+}
+
+// mcpHelpLine states the current MCP access setting and the command that
+// changes it. It names the marker so the footer symbol is self-explaining.
+func (m Model) mcpHelpLine() string {
+	if m.data.MCPEnabled {
+		return mcpIndicator + " AI agents can manage this matrix over MCP · turn off with: ike mcp disable"
+	}
+	return "AI agent access (MCP) is off · turn on with: ike mcp enable"
+}
+
+// mcpIndicator is the ambient "an agent can reach this matrix" marker. It is
+// shown only while access is on, so its absence is the quiet default.
+const mcpIndicator = "◆ mcp"
+
+// withMCPIndicator right-aligns the indicator on a footer line, if access is
+// on and the line has room for it. Too narrow, and the status text wins.
+func (m Model) withMCPIndicator(line string) string {
+	if !m.data.MCPEnabled {
+		return line
+	}
+	used := ansi.StringWidth(line)
+	if used+1+ansi.StringWidth(mcpIndicator) > m.width {
+		return line
+	}
+	gap := m.width - used - ansi.StringWidth(mcpIndicator)
+	marker := lipgloss.NewStyle().Foreground(m.quadrantColor(task.Delegate)).Render(mcpIndicator)
+	return line + strings.Repeat(" ", gap) + marker
 }
 
 func (m Model) renderArchive() string {
 	dim := lipgloss.NewStyle().Foreground(m.dimColor())
 	title := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("Archive — %d completed", len(m.data.Archive)))
 
-	arch := make([]task.Task, len(m.data.Archive))
-	copy(arch, m.data.Archive)
 	// Newest completion first, matching `ike archive`.
-	for i, j := 0, len(arch)-1; i < j; i, j = i+1, j-1 {
-		arch[i], arch[j] = arch[j], arch[i]
-	}
+	arch := m.archiveList()
 
-	visible := m.height - 3 // title + blank + footer
+	visible := m.height - 4 // title + blank + status + footer
 	offset := 0
 	if m.archCursor >= visible {
 		offset = m.archCursor - visible + 1
@@ -233,6 +278,9 @@ func (m Model) renderArchive() string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, dim.Render("j/k scroll · v/esc/q back"))
+	lines = append(lines,
+		ansi.Truncate(m.status, m.width, "…"),
+		dim.Render("r restore to its quadrant · j/k scroll · v/esc/q back"),
+	)
 	return strings.Join(lines, "\n")
 }

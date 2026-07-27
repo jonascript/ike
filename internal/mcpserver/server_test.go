@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jonascript/ike/internal/store"
+	"github.com/jonascript/ike/internal/task"
 )
 
 // connect wires an in-process client to the server and returns a call helper.
@@ -62,6 +63,8 @@ func TestToolsAreRegistered(t *testing.T) {
 	want := map[string]bool{
 		"list_tasks": false, "add_task": false, "complete_task": false,
 		"move_task": false, "update_task": false, "delete_task": false, "list_archive": false,
+		"restore_task": false, "reorder_task": false, "undo": false, "redo": false,
+		"list_quadrants": false, "set_quadrant_label": false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -83,7 +86,7 @@ func TestAddCompleteArchiveFlow(t *testing.T) {
 		t.Fatalf("add_task errored: %+v", res.Content)
 	}
 	added := structured(t, res)
-	if added["id"].(float64) != 1 || added["quadrant_label"] != "Do" {
+	if added["id"].(float64) != 1 || added["quadrant_label"] != "Do It First" {
 		t.Errorf("add_task output = %v", added)
 	}
 
@@ -134,6 +137,157 @@ func TestMoveUpdateDelete(t *testing.T) {
 	arch, _ := s.ListArchive()
 	if len(tasks) != 0 || len(arch) != 0 {
 		t.Error("delete_task should remove permanently without archiving")
+	}
+}
+
+func TestRestoreTask(t *testing.T) {
+	sess, s := connect(t)
+	call(t, sess, "add_task", map[string]any{"title": "premature", "quadrant": 3})
+	call(t, sess, "complete_task", map[string]any{"id": 1})
+
+	res := call(t, sess, "restore_task", map[string]any{"id": 1})
+	if res.IsError {
+		t.Fatalf("restore_task errored: %+v", res.Content)
+	}
+	out := structured(t, res)
+	if out["done_at"] != nil && out["done_at"] != "" {
+		t.Errorf("restored task still has done_at: %v", out)
+	}
+	if out["quadrant"].(float64) != 3 {
+		t.Errorf("restored to quadrant %v, want 3", out["quadrant"])
+	}
+	tasks, _ := s.List(0)
+	arch, _ := s.ListArchive()
+	if len(tasks) != 1 || len(arch) != 0 {
+		t.Errorf("after restore: active=%d archive=%d, want 1/0", len(tasks), len(arch))
+	}
+}
+
+func TestReorderTask(t *testing.T) {
+	sess, s := connect(t)
+	call(t, sess, "add_task", map[string]any{"title": "a", "quadrant": 1})
+	call(t, sess, "add_task", map[string]any{"title": "b", "quadrant": 1})
+	call(t, sess, "add_task", map[string]any{"title": "c", "quadrant": 1})
+
+	if res := call(t, sess, "reorder_task", map[string]any{"id": 3, "direction": "top"}); res.IsError {
+		t.Fatalf("reorder_task errored: %+v", res.Content)
+	}
+	tasks, _ := s.List(1)
+	if len(tasks) != 3 || tasks[0].Title != "c" {
+		t.Errorf("order = %+v, want c first", tasks)
+	}
+
+	if res := call(t, sess, "reorder_task", map[string]any{"id": 3, "direction": "sideways"}); !res.IsError {
+		t.Error("an invalid direction should set IsError")
+	}
+}
+
+func TestUndoTool(t *testing.T) {
+	sess, s := connect(t)
+	call(t, sess, "add_task", map[string]any{"title": "keep", "quadrant": 1})
+	call(t, sess, "delete_task", map[string]any{"id": 1})
+
+	res := call(t, sess, "undo", map[string]any{})
+	if res.IsError {
+		t.Fatalf("undo errored: %+v", res.Content)
+	}
+	if undone := structured(t, res)["undone"]; undone != `delete "keep"` {
+		t.Errorf("undone = %v, want the delete label", undone)
+	}
+	tasks, _ := s.List(0)
+	if len(tasks) != 1 || tasks[0].Title != "keep" {
+		t.Errorf("undo did not bring the task back: %+v", tasks)
+	}
+
+	// Drain the stack, then undoing again must be a tool error.
+	for {
+		if res := call(t, sess, "undo", map[string]any{}); res.IsError {
+			break
+		}
+	}
+}
+
+func TestRedoTool(t *testing.T) {
+	sess, s := connect(t)
+	call(t, sess, "add_task", map[string]any{"title": "keep", "quadrant": 1})
+	call(t, sess, "delete_task", map[string]any{"id": 1})
+	call(t, sess, "undo", map[string]any{})
+
+	res := call(t, sess, "redo", map[string]any{})
+	if res.IsError {
+		t.Fatalf("redo errored: %+v", res.Content)
+	}
+	if redone := structured(t, res)["redone"]; redone != `delete "keep"` {
+		t.Errorf("redone = %v, want the delete label", redone)
+	}
+	if tasks, _ := s.List(0); len(tasks) != 0 {
+		t.Errorf("redo did not re-apply the delete: %+v", tasks)
+	}
+
+	// Nothing left to redo.
+	if res := call(t, sess, "redo", map[string]any{}); !res.IsError {
+		t.Error("redo with an empty stack should set IsError")
+	}
+}
+
+func TestRedoInvalidatedByAnotherFrontend(t *testing.T) {
+	sess, s := connect(t)
+	call(t, sess, "add_task", map[string]any{"title": "one", "quadrant": 1})
+	call(t, sess, "delete_task", map[string]any{"id": 1})
+	call(t, sess, "undo", map[string]any{})
+
+	// A write straight to the store, as the CLI or TUI would make.
+	if _, err := s.Add("from another frontend", task.Schedule); err != nil {
+		t.Fatal(err)
+	}
+	if res := call(t, sess, "redo", map[string]any{}); !res.IsError {
+		t.Error("a write from another frontend should invalidate redo")
+	}
+}
+
+func TestQuadrantLabelTools(t *testing.T) {
+	sess, s := connect(t)
+
+	res := call(t, sess, "list_quadrants", map[string]any{})
+	if res.IsError {
+		t.Fatalf("list_quadrants errored: %+v", res.Content)
+	}
+	quads := structured(t, res)["quadrants"].([]any)
+	if len(quads) != 4 {
+		t.Fatalf("list_quadrants returned %d quadrants, want 4", len(quads))
+	}
+	if first := quads[0].(map[string]any); first["quadrant_label"] != "Do It First" {
+		t.Errorf("quadrant 1 label = %v, want the default", first["quadrant_label"])
+	}
+
+	res = call(t, sess, "set_quadrant_label", map[string]any{"quadrant": 1, "label": "Firefighting"})
+	if res.IsError {
+		t.Fatalf("set_quadrant_label errored: %+v", res.Content)
+	}
+	if got := structured(t, res)["quadrant_label"]; got != "Firefighting" {
+		t.Errorf("set returned %v, want Firefighting", got)
+	}
+
+	// Task output reflects the custom name.
+	call(t, sess, "add_task", map[string]any{"title": "put out fire", "quadrant": 1})
+	res = call(t, sess, "list_tasks", map[string]any{})
+	listed := structured(t, res)["tasks"].([]any)
+	if got := listed[0].(map[string]any)["quadrant_label"]; got != "Firefighting" {
+		t.Errorf("task quadrant_label = %v, want Firefighting", got)
+	}
+
+	// An empty label resets.
+	res = call(t, sess, "set_quadrant_label", map[string]any{"quadrant": 1, "label": ""})
+	if got := structured(t, res)["quadrant_label"]; got != "Do It First" {
+		t.Errorf("reset returned %v, want the default", got)
+	}
+	labels, _ := s.QuadrantLabels()
+	if labels.IsCustom(task.Do) {
+		t.Error("quadrant still custom after reset")
+	}
+
+	if res := call(t, sess, "set_quadrant_label", map[string]any{"quadrant": 9, "label": "x"}); !res.IsError {
+		t.Error("an invalid quadrant should set IsError")
 	}
 }
 

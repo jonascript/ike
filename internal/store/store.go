@@ -21,7 +21,10 @@ import (
 	"github.com/jonascript/ike/internal/task"
 )
 
-const currentVersion = 1
+// currentVersion is the schema version this build writes. Version 2 added
+// per-task ranks and the undo stack; version 1 files are upgraded in memory
+// on read and persisted at version 2 by the next write.
+const currentVersion = 2
 
 // Data is the full on-disk state.
 type Data struct {
@@ -29,6 +32,47 @@ type Data struct {
 	NextID  int         `json:"next_id"`
 	Tasks   []task.Task `json:"tasks"`
 	Archive []task.Task `json:"archive"`
+	Labels  Labels      `json:"quadrant_labels,omitempty"`
+	Undo    []Snapshot  `json:"undo,omitempty"`
+	Redo    []Snapshot  `json:"redo,omitempty"`
+
+	// MCPEnabled gates the MCP server's access to this matrix. The zero value
+	// is false, so a fresh install — and any data file written before this
+	// field existed — starts with agent access switched off until the owner
+	// opts in. It is intentionally absent from Snapshot: undo moves tasks
+	// around, and must never quietly change who can reach them.
+	MCPEnabled bool `json:"mcp_enabled,omitempty"`
+}
+
+// Labels holds user-chosen names for quadrants. It is sparse: only quadrants
+// renamed away from their default appear, so the defaults can change in a
+// later release without rewriting anyone's data file.
+type Labels map[task.Quadrant]string
+
+// Of returns the display name for q — the custom label if one is set, else the
+// built-in default. It is safe to call on a nil Labels, which is the common
+// case, so frontends can always render with d.Labels.Of(q).
+func (l Labels) Of(q task.Quadrant) string {
+	if custom, ok := l[q]; ok && custom != "" {
+		return custom
+	}
+	return q.Label()
+}
+
+// IsCustom reports whether q has been renamed away from its default.
+func (l Labels) IsCustom(q task.Quadrant) bool {
+	custom, ok := l[q]
+	return ok && custom != "" && custom != q.Label()
+}
+
+// Snapshot is a copy of the mutable state at one point in time, with a label
+// naming the change it sits either side of — e.g. `complete "ship v2"`. On the
+// undo stack it holds the state before that change; on the redo stack, after.
+type Snapshot struct {
+	Label   string      `json:"label"`
+	Tasks   []task.Task `json:"tasks"`
+	Archive []task.Task `json:"archive"`
+	Labels  Labels      `json:"quadrant_labels,omitempty"`
 }
 
 func emptyData() Data {
@@ -112,12 +156,15 @@ func readFile(path string) (Data, error) {
 	if err := json.Unmarshal(b, &d); err != nil {
 		return Data{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	if d.Version != currentVersion {
+	if d.Version < 1 || d.Version > currentVersion {
 		return Data{}, fmt.Errorf("%s has unsupported version %d (expected %d)", path, d.Version, currentVersion)
 	}
+	// Older files are upgraded in memory; the next write persists the upgrade.
+	d.Version = currentVersion
 	if d.NextID < 1 {
 		d.NextID = 1
 	}
+	normalizeRanks(&d)
 	return d, nil
 }
 

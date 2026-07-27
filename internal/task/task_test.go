@@ -1,6 +1,9 @@
 package task
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestQuadrantValid(t *testing.T) {
 	cases := []struct {
@@ -26,21 +29,39 @@ func TestQuadrantLabels(t *testing.T) {
 	cases := []struct {
 		q     Quadrant
 		label string
-		desc  string
 	}{
-		{Do, "Do", "Emergencies"},
-		{Schedule, "Schedule", "Planning"},
-		{Delegate, "Delegate", "Interruptions"},
-		{Eliminate, "Eliminate", "Time-wasters"},
-		{0, "?", ""},
+		{Do, "Do It First"},
+		{Schedule, "Schedule It"},
+		{Delegate, "Delegate It"},
+		{Eliminate, "Consider Eliminating It"},
+		{0, "?"},
 	}
 	for _, c := range cases {
 		if got := c.q.Label(); got != c.label {
 			t.Errorf("Quadrant(%d).Label() = %q, want %q", c.q, got, c.label)
 		}
-		if got := c.q.Desc(); got != c.desc {
-			t.Errorf("Quadrant(%d).Desc() = %q, want %q", c.q, got, c.desc)
-		}
+	}
+}
+
+func TestValidateLabel(t *testing.T) {
+	if err := ValidateLabel(""); err != nil {
+		t.Errorf("blank label should be allowed (it means reset): %v", err)
+	}
+	if err := ValidateLabel("Do It Right Now"); err != nil {
+		t.Errorf("ordinary label rejected: %v", err)
+	}
+	if err := ValidateLabel(strings.Repeat("x", MaxLabelLen)); err != nil {
+		t.Errorf("label at the limit rejected: %v", err)
+	}
+	if err := ValidateLabel(strings.Repeat("x", MaxLabelLen+1)); err == nil {
+		t.Error("over-long label should be rejected")
+	}
+	// Measured in runes, not bytes, so accented names get their full length.
+	if err := ValidateLabel(strings.Repeat("é", MaxLabelLen)); err != nil {
+		t.Errorf("multi-byte label at the limit rejected: %v", err)
+	}
+	if err := ValidateLabel("two\nlines"); err == nil {
+		t.Error("label with a line break should be rejected")
 	}
 }
 

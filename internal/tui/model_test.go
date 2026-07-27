@@ -130,6 +130,118 @@ func TestEditTask(t *testing.T) {
 	}
 }
 
+func TestRenameQuadrant(t *testing.T) {
+	m, s := testModel(t)
+	m = press(t, m, "3", "t")
+	if m.mode != modeInput || m.labelTarget != task.Delegate {
+		t.Fatalf("rename mode not entered: mode=%v target=%v", m.mode, m.labelTarget)
+	}
+	// The input is prefilled with the current name, so it can be edited.
+	if m.input.Value() != "Delegate It" {
+		t.Errorf("input prefilled with %q, want the current name", m.input.Value())
+	}
+
+	m.input.SetValue("Hand Off")
+	m = press(t, m, "enter")
+	if m.mode != modeNormal || m.labelTarget != 0 {
+		t.Errorf("rename did not exit cleanly: mode=%v target=%v", m.mode, m.labelTarget)
+	}
+
+	labels, err := s.QuadrantLabels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if labels.Of(task.Delegate) != "Hand Off" {
+		t.Errorf("stored label = %q, want Hand Off", labels.Of(task.Delegate))
+	}
+	if out := m.render(); !strings.Contains(out, "Hand Off") {
+		t.Errorf("matrix does not show the new name:\n%s", out)
+	}
+}
+
+func TestRenameQuadrantToBlankRestoresDefault(t *testing.T) {
+	m, s := testModel(t)
+	if _, err := s.SetQuadrantLabel(task.Do, "Firefighting"); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+
+	m = press(t, m, "1", "t")
+	m.input.SetValue("")
+	m = press(t, m, "enter")
+
+	labels, _ := s.QuadrantLabels()
+	if labels.Of(task.Do) != "Do It First" {
+		t.Errorf("label = %q, want the default restored", labels.Of(task.Do))
+	}
+}
+
+func TestRenameQuadrantCancelled(t *testing.T) {
+	m, s := testModel(t)
+	m = press(t, m, "2", "t")
+	m.input.SetValue("Nope")
+	m = press(t, m, "esc")
+	if m.mode != modeNormal || m.labelTarget != 0 {
+		t.Errorf("esc did not leave rename mode: mode=%v target=%v", m.mode, m.labelTarget)
+	}
+	labels, _ := s.QuadrantLabels()
+	if labels.Of(task.Schedule) != "Schedule It" {
+		t.Errorf("cancelled rename still wrote %q", labels.Of(task.Schedule))
+	}
+}
+
+func TestRenameQuadrantDoesNotAddATask(t *testing.T) {
+	m, s := testModel(t)
+	m = press(t, m, "1", "t")
+	m.input.SetValue("Firefighting")
+	m = press(t, m, "enter")
+
+	tasks, _ := s.List(0)
+	if len(tasks) != 0 {
+		t.Errorf("renaming a quadrant created %d tasks", len(tasks))
+	}
+}
+
+func TestAddStillWorksAfterRenaming(t *testing.T) {
+	m, s := testModel(t)
+	m = press(t, m, "1", "t")
+	m.input.SetValue("Firefighting")
+	m = press(t, m, "enter")
+
+	// labelTarget must be cleared, or the next `a` would rename instead of add.
+	m = press(t, m, "a")
+	m = typeText(t, m, "a real task")
+	m = press(t, m, "enter")
+
+	tasks, _ := s.List(task.Do)
+	if len(tasks) != 1 || tasks[0].Title != "a real task" {
+		t.Errorf("tasks = %v, want the added task", titlesOf(tasks))
+	}
+	labels, _ := s.QuadrantLabels()
+	if labels.Of(task.Do) != "Firefighting" {
+		t.Errorf("label = %q, want it unchanged by the add", labels.Of(task.Do))
+	}
+}
+
+func TestQuadrantHeadersAreJustNames(t *testing.T) {
+	m, s := testModel(t)
+	if _, err := s.SetQuadrantLabel(task.Do, "Firefighting"); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+	out := m.render()
+
+	if !strings.Contains(out, "1 · Firefighting") {
+		t.Errorf("header missing the quadrant name:\n%s", out)
+	}
+	// The old descriptive nicknames are gone from the interface entirely.
+	for _, gone := range []string{"Emergencies", "Planning", "Interruptions", "Time-wasters"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("render still shows the %q description", gone)
+		}
+	}
+}
+
 func TestCompleteTask(t *testing.T) {
 	m, s := testModel(t)
 	s.Add("finish me", task.Do)
@@ -209,6 +321,220 @@ func TestArchiveView(t *testing.T) {
 	}
 }
 
+func TestReorderKeysMoveTaskAndCursor(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("a", task.Do)
+	s.Add("b", task.Do)
+	s.Add("c", task.Do)
+	m.refreshFromStore(t)
+
+	// Select "c" (index 2), then move it to the top with two K presses.
+	m = press(t, m, "1", "j", "j")
+	if sel, _ := m.selected(); sel.Title != "c" {
+		t.Fatalf("selected %q, want c", sel.Title)
+	}
+	m = press(t, m, "K", "K")
+
+	ts, _ := s.List(task.Do)
+	if len(ts) != 3 || ts[0].Title != "c" {
+		t.Fatalf("store order = %v, want c first", titlesOf(ts))
+	}
+	// The cursor follows the task it moved.
+	if sel, _ := m.selected(); sel.Title != "c" {
+		t.Errorf("selection after reorder = %q, want c", sel.Title)
+	}
+	if m.cursor[task.Do] != 0 {
+		t.Errorf("cursor = %d, want 0", m.cursor[task.Do])
+	}
+
+	// And back down to the bottom.
+	m = press(t, m, "J", "J")
+	ts, _ = s.List(task.Do)
+	if ts[2].Title != "c" {
+		t.Errorf("store order = %v, want c last", titlesOf(ts))
+	}
+}
+
+func TestUndoKey(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("finish me", task.Do)
+	m.refreshFromStore(t)
+	m = press(t, m, "1", "x")
+	if arch, _ := s.ListArchive(); len(arch) != 1 {
+		t.Fatal("task should be archived before undo")
+	}
+
+	m = press(t, m, "u")
+	active, _ := s.List(0)
+	arch, _ := s.ListArchive()
+	if len(active) != 1 || len(arch) != 0 {
+		t.Errorf("after undo: active=%d archive=%d, want 1/0", len(active), len(arch))
+	}
+	if !strings.Contains(m.status, "undid") {
+		t.Errorf("status = %q, want it to mention the undo", m.status)
+	}
+	if len(m.tasksIn(task.Do)) != 1 {
+		t.Error("model did not re-render the restored task")
+	}
+}
+
+func TestRedoKey(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("finish me", task.Do)
+	m.refreshFromStore(t)
+	m = press(t, m, "1", "x", "u")
+	if active, _ := s.List(0); len(active) != 1 {
+		t.Fatal("undo should have brought the task back")
+	}
+
+	m = press(t, m, "U")
+	active, _ := s.List(0)
+	arch, _ := s.ListArchive()
+	if len(active) != 0 || len(arch) != 1 {
+		t.Errorf("after redo: active=%d archive=%d, want 0/1", len(active), len(arch))
+	}
+	if !strings.Contains(m.status, "redid") {
+		t.Errorf("status = %q, want it to mention the redo", m.status)
+	}
+}
+
+func TestRedoHintOnlyShownWhenAvailable(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("a task", task.Do)
+	m.refreshFromStore(t)
+	if out := m.render(); strings.Contains(out, "U redo") {
+		t.Error("redo hint shown with nothing to redo")
+	}
+
+	m = press(t, m, "1", "u")
+	if out := m.render(); !strings.Contains(out, "U redo") {
+		t.Errorf("redo hint missing after an undo:\n%s", out)
+	}
+
+	// A new change discards the redo stack, so the hint goes away again.
+	m = press(t, m, "a")
+	m = typeText(t, m, "something new")
+	m = press(t, m, "enter")
+	if out := m.render(); strings.Contains(out, "U redo") {
+		t.Error("redo hint still shown after a diverging change")
+	}
+}
+
+func TestUndoKeyWithNothingToUndo(t *testing.T) {
+	m, _ := testModel(t)
+	m = press(t, m, "u")
+	if m.status == "" {
+		t.Error("undo with an empty stack should report why in the status line")
+	}
+}
+
+func TestRestoreFromArchiveView(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("done thing", task.Do)
+	s.Complete(1)
+	m.refreshFromStore(t)
+
+	m = press(t, m, "v")
+	if m.mode != modeArchive {
+		t.Fatalf("mode = %v, want modeArchive", m.mode)
+	}
+	m = press(t, m, "r")
+
+	active, _ := s.List(task.Do)
+	arch, _ := s.ListArchive()
+	if len(active) != 1 || len(arch) != 0 {
+		t.Fatalf("after restore: active=%d archive=%d, want 1/0", len(active), len(arch))
+	}
+	if active[0].DoneAt != nil {
+		t.Error("restored task should have no completion time")
+	}
+	if !strings.Contains(m.status, "restored") {
+		t.Errorf("status = %q, want it to mention the restore", m.status)
+	}
+	if m.mode != modeArchive {
+		t.Error("restoring should stay in the archive view so several can be restored")
+	}
+}
+
+func TestRestoreTargetsTheSelectedArchiveRow(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("older", task.Do)
+	s.Add("newer", task.Do)
+	s.Complete(1) // older
+	s.Complete(2) // newer
+	m.refreshFromStore(t)
+
+	// The archive lists newest first, so row 1 is "older".
+	m = press(t, m, "v", "j", "r")
+
+	active, _ := s.List(task.Do)
+	if len(active) != 1 || active[0].Title != "older" {
+		t.Errorf("restored %v, want just [older]", titlesOf(active))
+	}
+}
+
+func TestMCPIndicatorOnlyWhenEnabled(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("a task", task.Do)
+	m.refreshFromStore(t)
+
+	if out := m.render(); strings.Contains(out, mcpIndicator) {
+		t.Errorf("indicator shown while MCP access is off:\n%s", out)
+	}
+
+	if _, err := s.SetMCPEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+	if out := m.render(); !strings.Contains(out, mcpIndicator) {
+		t.Errorf("indicator missing while MCP access is on:\n%s", out)
+	}
+
+	// Turning it off elsewhere clears the marker on the next refresh.
+	if _, err := s.SetMCPEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+	if out := m.render(); strings.Contains(out, mcpIndicator) {
+		t.Error("indicator survived MCP access being revoked")
+	}
+}
+
+func TestMCPIndicatorHiddenWhileTyping(t *testing.T) {
+	m, s := testModel(t)
+	if _, err := s.SetMCPEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+
+	m = press(t, m, "a")
+	if m.mode != modeInput {
+		t.Fatal("expected input mode")
+	}
+	if out := m.render(); strings.Contains(out, mcpIndicator) {
+		t.Error("indicator should stand aside while the input line is in use")
+	}
+}
+
+func TestHelpExplainsMCPSetting(t *testing.T) {
+	m, s := testModel(t)
+	m = press(t, m, "?")
+
+	out := m.render()
+	if !strings.Contains(out, "ike mcp enable") {
+		t.Errorf("help does not say how to turn MCP access on:\n%s", out)
+	}
+
+	if _, err := s.SetMCPEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+	out = m.render()
+	if !strings.Contains(out, "ike mcp disable") {
+		t.Errorf("help does not say how to turn MCP access off:\n%s", out)
+	}
+}
+
 func TestRefreshPicksUpExternalChanges(t *testing.T) {
 	m, s := testModel(t)
 	// Simulate another frontend (CLI/MCP) writing while the TUI is open.
@@ -226,8 +552,8 @@ func TestRenderSmoke(t *testing.T) {
 	m.refreshFromStore(t)
 	out := m.render()
 
-	for _, want := range []string{"Do", "Schedule", "Delegate", "Eliminate", "visible task",
-		"Urgent", "Not urgent"} {
+	for _, want := range []string{"Do It First", "Schedule It", "Delegate It",
+		"Consider Eliminating It", "visible task", "Urgent", "Not urgent"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q", want)
 		}
@@ -237,6 +563,15 @@ func TestRenderSmoke(t *testing.T) {
 	if out := m.render(); !strings.Contains(out, "too small") {
 		t.Errorf("small terminal should say too small, got:\n%s", out)
 	}
+}
+
+// titlesOf is a compact way to show task order in failure messages.
+func titlesOf(ts []task.Task) []string {
+	out := make([]string, len(ts))
+	for i, t := range ts {
+		out[i] = t.Title
+	}
+	return out
 }
 
 // refreshFromStore reloads model data outside of Update, for test setup.
