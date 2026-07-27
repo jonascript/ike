@@ -1,2 +1,17 @@
+# Build output
 ike
+dist/
 *.tmp
+
+# Test and coverage artifacts
+*.test
+coverage.out
+coverage.html
+
+# Local tool settings: machine-specific permission grants, so a contributor's
+# copy has no business in the repo. Previously covered only by a global
+# gitignore, which a fresh clone does not inherit.
+.claude/settings.local.json
+
+# macOS
+.DS_Store

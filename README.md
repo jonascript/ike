@@ -30,7 +30,7 @@ tools keep working whatever you call them.
 
 ## Install
 
-Requires Go 1.24+.
+Requires Go 1.25+.
 
 ```sh
 go install github.com/jonascript/ike@latest
@@ -163,9 +163,15 @@ XDG conventions).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Third-party dependencies and their licenses — all permissive,
+none copyleft — are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ---
 
-*Logo based on Eisenhower's official White House portrait (May 29, 1959), a
-U.S. government work in the public domain.*
+*Logo based on Eisenhower's [official White House portrait of May 29,
+1959](https://commons.wikimedia.org/wiki/File:Dwight_D._Eisenhower,_official_photo_portrait,_May_29,_1959.jpg)
+(White House / Eisenhower Presidential Library). It is a work of an employee of
+the Executive Office of the President made as part of their official duties,
+and so is in the public domain as a work of the U.S. federal government. No
+attribution is required; it is recorded here so anyone redistributing ike can
+verify the claim for themselves.*
