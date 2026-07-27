@@ -188,6 +188,11 @@ func (m Model) renderFooter() string {
 	default:
 		status = m.status
 	}
+	// A failed background reload outranks any transient status message: the
+	// matrix on screen may no longer match the file.
+	if m.loadErr != "" && m.mode != modeInput {
+		status = "cannot re-read the data file: " + task.SanitizeDisplay(m.loadErr)
+	}
 
 	// Redo is only offered while there is something to redo — the next real
 	// change discards the stack, from any frontend.

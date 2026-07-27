@@ -42,6 +42,12 @@ func init() {
 				// stdout carries JSON-RPC, so this must not go there. Returning
 				// an error routes it to stderr and exits non-zero, which the
 				// client surfaces as a failed connection rather than an empty one.
+				//
+				// Deliberately multi-line and sentence-punctuated, against the
+				// usual convention for error strings: the reader is someone
+				// staring at an MCP client's log, and the whole value of this
+				// message is that it tells them the exact command to run.
+				//nolint:staticcheck // ST1005: formatted for a human, not a caller.
 				return errors.New(mcpDisabledMsg)
 			}
 			// stdout carries JSON-RPC; anything human-facing must go to stderr,

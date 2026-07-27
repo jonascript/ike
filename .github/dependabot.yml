@@ -1,0 +1,40 @@
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # The three charm libraries must move as a set — mixing v2 minor versions
+      # across bubbletea, lipgloss and bubbles breaks the shared API they
+      # exchange (tea.View, lipgloss.LightDark, key handling). One PR that
+      # bumps them together is reviewable; three that bump them apart are not.
+      charm:
+        patterns:
+          - "charm.land/*"
+          - "github.com/charmbracelet/*"
+    ignore:
+      # Major-version bumps of the TUI stack are a porting job, not a
+      # dependency update: v1 to v2 already changed how keys arrive, what
+      # View() returns, and how colors adapt. Do those by hand.
+      - dependency-name: "charm.land/bubbletea/v2"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "charm.land/lipgloss/v2"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "charm.land/bubbles/v2"
+        update-types: ["version-update:semver-major"]
+      # The MCP SDK stays on v1.x stable. Dependabot cannot tell a -pre release
+      # from a stable one, and this project deliberately does not track them.
+      - dependency-name: "github.com/modelcontextprotocol/go-sdk"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"

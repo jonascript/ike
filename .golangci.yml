@@ -1,0 +1,40 @@
+# golangci-lint v2 configuration.
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    # Wrapping and comparison mistakes around errors — this codebase leans on
+    # errors.Is for sentinels like ErrMCPDisabled and os.ErrNotExist.
+    - errorlint
+    # Returning nil after checking a non-nil error, and similar inversions.
+    - nilerr
+    - unconvert
+    - usestdlibvars
+    - misspell
+
+  settings:
+    errcheck:
+      # An explicit `_ =` is a deliberate, commented decision in this codebase
+      # (best-effort directory fsync, chmod remediation, deferred Close), so
+      # don't also flag those.
+      check-blank: false
+    misspell:
+      locale: US
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Tests deliberately ignore errors on cleanup paths and assert on output
+      # rather than plumbing every error.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt

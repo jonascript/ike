@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,7 +108,7 @@ func TestAddCancelled(t *testing.T) {
 	}
 	tasks, _ := s.List(0)
 	if len(tasks) != 0 {
-		t.Errorf("cancelled add still wrote %d tasks", len(tasks))
+		t.Errorf("canceled add still wrote %d tasks", len(tasks))
 	}
 }
 
@@ -186,7 +187,7 @@ func TestRenameQuadrantCancelled(t *testing.T) {
 	}
 	labels, _ := s.QuadrantLabels()
 	if labels.Of(task.Schedule) != "Schedule It" {
-		t.Errorf("cancelled rename still wrote %q", labels.Of(task.Schedule))
+		t.Errorf("canceled rename still wrote %q", labels.Of(task.Schedule))
 	}
 }
 
@@ -582,4 +583,52 @@ func (m *Model) refreshFromStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.refresh(d)
+}
+
+// The refresh tick used to discard its errors, so if the data file became
+// unreadable mid-session the TUI kept rendering the last good matrix with no
+// sign anything was wrong. The next mutation would surface it, but until then
+// the screen quietly disagreed with the file.
+func TestRefreshTickSurfacesAReadError(t *testing.T) {
+	m, s := testModel(t)
+	if _, err := s.Add("real task", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+
+	// Corrupt the file behind the TUI's back, the way a bad sync or a hand edit
+	// would, and make sure the mtime moves so the tick actually re-reads.
+	if err := os.WriteFile(s.Path(), []byte("{ not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.lastMtime = 0
+
+	next, _ := m.Update(tickMsg{})
+	m = next.(Model)
+
+	if m.loadErr == "" {
+		t.Fatal("a failed reload left no error on the model")
+	}
+	view := m.render()
+	if !strings.Contains(view, "cannot re-read the data file") {
+		t.Errorf("the failure is not visible in the view:\n%s", view)
+	}
+
+	// Recovering clears it again, so a transient problem does not stick. The
+	// file has to be repaired directly: Mutate deliberately refuses to write
+	// over a file it cannot parse, so s.Add would fail here too.
+	valid := `{"version":2,"next_id":2,"tasks":[{"id":1,"title":"real task","quadrant":1}],"archive":[]}`
+	if err := os.WriteFile(s.Path(), []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.lastMtime = 0
+	next, _ = m.Update(tickMsg{})
+	m = next.(Model)
+
+	if m.loadErr != "" {
+		t.Errorf("loadErr = %q, want it cleared after a good read", m.loadErr)
+	}
+	if got := m.render(); strings.Contains(got, "cannot re-read") {
+		t.Errorf("stale error still shown after recovery:\n%s", got)
+	}
 }

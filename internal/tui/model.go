@@ -217,8 +217,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if mt, err := m.store.ModTime(); err == nil && mt != m.lastMtime {
-			if d, err := m.store.Load(); err == nil {
+		// The poll picks up CLI and MCP writes. A failure here must be visible:
+		// silently keeping the last good data left the TUI showing a matrix that
+		// no longer matched the file, with no indication anything was wrong.
+		if mt, err := m.store.ModTime(); err != nil {
+			m.loadErr = err.Error()
+		} else if mt != m.lastMtime {
+			d, err := m.store.Load()
+			if err != nil {
+				m.loadErr = err.Error()
+			} else {
+				m.loadErr = ""
 				m.refresh(d)
 			}
 		}
