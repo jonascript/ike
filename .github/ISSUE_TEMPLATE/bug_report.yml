@@ -1,0 +1,69 @@
+name: Bug report
+description: Something in ike does not work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report security issues here — see
+        [SECURITY.md](https://github.com/jonascript/ike/blob/main/SECURITY.md).
+
+        **Your task titles are personal. Redact them from anything you paste.**
+        Nobody needs your real tasks to fix a bug.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, and what ike did.
+      placeholder: |
+        $ ike reorder 3 up
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ike version
+      description: Output of `ike --version`.
+      placeholder: ike version v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frontend
+    attributes:
+      label: Which frontend
+      multiple: true
+      options:
+        - TUI (bare `ike`)
+        - CLI subcommand
+        - MCP server (`ike mcp`)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and terminal
+      placeholder: macOS 15.3, Ghostty / Ubuntu 24.04, gnome-terminal
+    validations:
+      required: true
+
+  - type: textarea
+    id: data-file
+    attributes:
+      label: Anything unusual about your data file
+      description: >
+        Is `IKE_DATA_FILE` set? Is it on a synced or network folder (Dropbox,
+        iCloud, NFS)? Roughly how many tasks and archived tasks? Please do not
+        paste the file itself.

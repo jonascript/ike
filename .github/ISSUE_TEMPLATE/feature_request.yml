@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest something ike should do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ike is deliberately small — one binary, one JSON file, three ways in.
+        Suggestions that keep it that way are much more likely to land than ones
+        that add a server, a database, or sync.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The problem, rather than the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you would like ike to do
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which frontend would this affect
+      multiple: true
+      options:
+        - TUI
+        - CLI
+        - MCP
+        - All three
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+      description: Any workaround, or another tool that gets this right.

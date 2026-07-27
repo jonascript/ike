@@ -116,13 +116,13 @@ TUI only shows the redo hint while a redo is actually available.
 
 ## MCP
 
-**Agent access is off by default.** A fresh install will not serve your tasks to
-anything until you say so, and registering ike with an MCP client is not enough
-on its own — `ike mcp` refuses to start while access is off:
+**Agent access is off by default.** ike will not serve your tasks over MCP
+until you say so, and registering ike with an MCP client is not enough on its
+own — `ike mcp` refuses to start while access is off:
 
 ```sh
 ike mcp enable      # allow AI agents to read and manage this matrix
-ike mcp disable     # revoke it
+ike mcp disable     # revoke it, including for a session already connected
 ike mcp status      # show the current setting and which data file it applies to
 ```
 
@@ -132,6 +132,17 @@ tasks does not enable it for a second matrix under `IKE_DATA_FILE`. It is not
 part of undo history — no sequence of `ike undo` can re-open access you closed.
 While access is on, the TUI shows a `◆ mcp` marker in its footer, and `?`
 explains the setting either way.
+
+`ike mcp disable` takes effect immediately, including on a client that is
+already connected: the setting is re-checked on every read and every write, so
+the next thing an agent tries fails. It does not wait for the session to end.
+
+> **What this is, and isn't.** The gate is a **consent mechanism, not a security
+> boundary.** It controls whether ike's MCP server will serve your matrix. It
+> cannot restrain an agent that already has shell access on your machine — such
+> an agent can read `~/.local/share/ike/tasks.json` directly, run `ike list`, or
+> simply run `ike mcp enable` itself. Treat it as "I have decided to let my
+> agent manage my tasks", not as a sandbox.
 
 Once enabled, `ike mcp` runs an MCP server on stdio with tools `list_tasks`,
 `add_task`, `complete_task`, `move_task`, `reorder_task`, `update_task`,
@@ -154,12 +165,34 @@ Or in any MCP client config:
 ## Data
 
 Tasks live in `$XDG_DATA_HOME/ike/tasks.json` (default
-`~/.local/share/ike/tasks.json`). Override with `IKE_DATA_FILE`. Writes are
-atomic and serialized through a lock file, so the TUI, CLI, and MCP server can
-run at the same time without losing updates.
+`~/.local/share/ike/tasks.json`), created mode `0600` in a `0700` directory —
+your matrix is not readable by other users on the machine.
+
+Writes are serialized through a sidecar lock file and land via an atomic
+rename, so the TUI, CLI, and MCP server can run at the same time without losing
+updates. Each write is flushed to disk before the rename, and the previous
+contents are kept as `tasks.json.bak`, so an interrupted write costs at most
+one change rather than the whole matrix. If the file is ever unreadable, ike
+refuses to overwrite it rather than starting fresh over the top.
+
+Override the location with `IKE_DATA_FILE`, which must be an **absolute** path
+whose parent directory already exists (a relative path would resolve against
+whatever directory the process happened to start in — not something you can
+predict when an MCP client launches ike for you).
 
 Linux and macOS are supported; Windows is untested (path resolution assumes
-XDG conventions).
+XDG conventions). One caveat on the concurrency guarantee: it relies on
+advisory `flock`, which is unreliable on NFS and some FUSE mounts — so pointing
+`IKE_DATA_FILE` at a Dropbox, iCloud, or network-mounted folder and writing
+from two machines at once is not covered.
+
+## Contributing
+
+Bug reports and focused pull requests are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the build commands, how the three
+frontends sit over one store, and the store invariants worth knowing before
+changing it. Security issues go through [SECURITY.md](SECURITY.md) rather than
+the issue tracker.
 
 ## License
 
