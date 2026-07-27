@@ -30,8 +30,12 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
-          check-latest: true
+          # Stable, deliberately not go-version-file. go.mod declares the
+          # minimum a user may build with (currently 1.25.0); binaries we
+          # publish must be compiled with a toolchain that has current stdlib
+          # security fixes. Building releases from the floor would ship known
+          # CVEs to everyone who downloads them.
+          go-version: stable
 
       # Never publish a release that would not have passed CI.
       - name: Verify before releasing
