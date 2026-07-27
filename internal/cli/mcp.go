@@ -46,7 +46,11 @@ func init() {
 			}
 			// stdout carries JSON-RPC; anything human-facing must go to stderr,
 			// which cobra already uses for errors.
-			err = mcpserver.Run(cmd.Context(), s, version)
+			//
+			// ForMCP re-checks the gate on every read and mutation, so
+			// `ike mcp disable` revokes this session even while it stays
+			// connected. The check above only covers startup.
+			err = mcpserver.Run(cmd.Context(), s.ForMCP(), version)
 			// A client disconnect is a normal shutdown, but the SDK surfaces
 			// it as an error whose sentinel lives in an internal package, so
 			// match by message.

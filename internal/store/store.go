@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gofrs/flock"
 
@@ -83,10 +84,24 @@ func emptyData() Data {
 	return Data{Version: currentVersion, NextID: 1}
 }
 
+// ErrMCPDisabled is returned to an MCP client whose access has been revoked.
+// It is a distinct sentinel so the transport can report a permission problem
+// rather than a data problem.
+var ErrMCPDisabled = errors.New("MCP access is off for this matrix; run `ike mcp enable` to allow it")
+
 // Store reads and writes the tasks file at a fixed path.
 type Store struct {
 	path     string
 	lockPath string
+
+	// requireMCP marks this Store as serving an MCP client. Every read and
+	// every mutation then re-checks Data.MCPEnabled, so `ike mcp disable`
+	// revokes a session that is already connected. Checking only at startup
+	// meant a long-lived client kept full access for as long as it stayed
+	// connected — hours or days — while `ike mcp status` reported "off".
+	// The gate lives here rather than in the CLI because process lifetime
+	// bypasses anything checked once before serving.
+	requireMCP bool
 }
 
 // Open returns a Store at the default (XDG or IKE_DATA_FILE) location.
@@ -106,6 +121,52 @@ func OpenAt(path string) *Store {
 // Path returns the data file path.
 func (s *Store) Path() string { return s.path }
 
+// ForMCP returns a view of s that re-checks the access gate on every read and
+// mutation, and keeps the data file's location out of the errors it returns.
+// The caller keeps the ungated Store, so `ike mcp status` can still report the
+// setting after access is revoked.
+func (s *Store) ForMCP() *Store {
+	gated := *s
+	gated.requireMCP = true
+	return &gated
+}
+
+// gate reports whether this Store may still touch d.
+func (s *Store) gate(d Data) error {
+	if s.requireMCP && !d.MCPEnabled {
+		return ErrMCPDisabled
+	}
+	return nil
+}
+
+// redact removes the data file's location from an error bound for an MCP
+// client, which would otherwise disclose the OS username and home layout. The
+// original error stays reachable through errors.Is and errors.As.
+func (s *Store) redact(err error) error {
+	if err == nil || !s.requireMCP {
+		return err
+	}
+	msg := err.Error()
+	for _, p := range []string{s.lockPath, s.path} {
+		msg = strings.ReplaceAll(msg, p, filepath.Base(p))
+	}
+	if dir := filepath.Dir(s.path); dir != "." {
+		msg = strings.ReplaceAll(msg, dir, "…")
+	}
+	if msg == err.Error() {
+		return err
+	}
+	return &redactedError{msg: msg, err: err}
+}
+
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
 // ModTime returns the data file's mtime, or the zero time if it does not exist.
 func (s *Store) ModTime() (mtime int64, err error) {
 	fi, err := os.Stat(s.path)
@@ -120,7 +181,14 @@ func (s *Store) ModTime() (mtime int64, err error) {
 
 // Load reads the current data without taking the write lock.
 func (s *Store) Load() (Data, error) {
-	return readFile(s.path)
+	d, err := readFile(s.path)
+	if err != nil {
+		return Data{}, s.redact(err)
+	}
+	if err := s.gate(d); err != nil {
+		return Data{}, err
+	}
+	return d, nil
 }
 
 // Mutate applies fn to a freshly-read copy of the data under an exclusive
@@ -131,19 +199,24 @@ func (s *Store) Mutate(fn func(*Data) error) (Data, error) {
 	}
 	lock := flock.New(s.lockPath)
 	if err := lock.Lock(); err != nil {
-		return Data{}, fmt.Errorf("locking %s: %w", s.lockPath, err)
+		return Data{}, s.redact(fmt.Errorf("locking %s: %w", s.lockPath, err))
 	}
 	defer lock.Unlock()
 
 	data, err := readFile(s.path)
 	if err != nil {
+		return Data{}, s.redact(err)
+	}
+	// Re-checked inside the lock against the state just read, so a revocation
+	// that landed after this process started is honored.
+	if err := s.gate(data); err != nil {
 		return Data{}, err
 	}
 	if err := fn(&data); err != nil {
 		return Data{}, err
 	}
 	if err := writeFileAtomic(s.path, data); err != nil {
-		return Data{}, err
+		return Data{}, s.redact(err)
 	}
 	return data, nil
 }
