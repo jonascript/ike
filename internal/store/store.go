@@ -10,17 +10,39 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gofrs/flock"
 
 	"github.com/jonascript/ike/internal/task"
 )
+
+const (
+	// dataFileMode keeps the matrix private. Task titles and the archive are
+	// personal, and the file used to land as 0644 — readable by every other
+	// user on the machine. Because writes go through a temp file and a rename,
+	// which replaces the inode, an existing 0644 file becomes 0600 on the next
+	// write without needing a migration.
+	dataFileMode = 0o600
+	// dataDirMode matches, so a directory listing cannot leak task counts or
+	// the existence of a second matrix either.
+	dataDirMode = 0o700
+)
+
+// lockTimeout bounds how long a mutation waits for another ike process. An
+// unbounded wait meant one hung holder made every later `ike` invocation block
+// forever, printing nothing at all. A variable so tests can shorten it.
+var lockTimeout = 5 * time.Second
+
+// lockRetryInterval is how often to retry while waiting for the lock.
+const lockRetryInterval = 25 * time.Millisecond
 
 // currentVersion is the schema version this build writes. Version 2 added
 // per-task ranks and the undo stack; version 1 files are upgraded in memory
@@ -193,29 +215,47 @@ func (s *Store) Load() (Data, error) {
 
 // Mutate applies fn to a freshly-read copy of the data under an exclusive
 // lock, then atomically writes the result. It returns the post-mutation data.
-func (s *Store) Mutate(fn func(*Data) error) (Data, error) {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return Data{}, err
+func (s *Store) Mutate(fn func(*Data) error) (data Data, err error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), dataDirMode); err != nil {
+		return Data{}, s.redact(err)
 	}
-	lock := flock.New(s.lockPath)
-	if err := lock.Lock(); err != nil {
-		return Data{}, s.redact(fmt.Errorf("locking %s: %w", s.lockPath, err))
-	}
-	defer lock.Unlock()
 
-	data, err := readFile(s.path)
+	lock := flock.New(s.lockPath)
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancel()
+	locked, lerr := lock.TryLockContext(ctx, lockRetryInterval)
+	if !locked {
+		// A timeout arrives as context.DeadlineExceeded rather than a false
+		// return, and "context deadline exceeded" tells the reader nothing
+		// about what to do.
+		if lerr == nil || errors.Is(lerr, context.DeadlineExceeded) {
+			return Data{}, s.redact(fmt.Errorf(
+				"timed out after %s waiting for another ike process to release %s",
+				lockTimeout, s.lockPath))
+		}
+		return Data{}, s.redact(fmt.Errorf("locking %s: %w", s.lockPath, lerr))
+	}
+	defer func() {
+		// Surface an unlock failure only if the mutation itself succeeded, so
+		// it never masks the more useful error.
+		if uerr := lock.Unlock(); uerr != nil && err == nil {
+			err = s.redact(fmt.Errorf("releasing %s: %w", s.lockPath, uerr))
+		}
+	}()
+
+	data, err = readFile(s.path)
 	if err != nil {
 		return Data{}, s.redact(err)
 	}
 	// Re-checked inside the lock against the state just read, so a revocation
 	// that landed after this process started is honored.
-	if err := s.gate(data); err != nil {
+	if err = s.gate(data); err != nil {
 		return Data{}, err
 	}
-	if err := fn(&data); err != nil {
+	if err = fn(&data); err != nil {
 		return Data{}, err
 	}
-	if err := writeFileAtomic(s.path, data); err != nil {
+	if err = writeFileAtomic(s.path, data); err != nil {
 		return Data{}, s.redact(err)
 	}
 	return data, nil
@@ -251,9 +291,75 @@ func writeFileAtomic(path string, d Data) error {
 		return err
 	}
 	b = append(b, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+
+	if err := writeBackup(path); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+
+	// A random name created with O_EXCL, rather than path+".tmp". IKE_DATA_FILE
+	// can point anywhere, including a shared directory, and opening a
+	// predictable name follows symlinks — so a pre-created path+".tmp" symlink
+	// would redirect this write and truncate whatever it pointed at.
+	// os.CreateTemp opens with 0600, so the replacement file is private.
+	f, err := os.CreateTemp(filepath.Dir(path), ".tasks-*.json")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	committed := false
+	defer func() {
+		_ = f.Close() // no-op after the successful Close below
+		if !committed {
+			_ = os.Remove(tmp)
+		}
+	}()
+
+	if _, err := f.Write(b); err != nil {
+		return err
+	}
+	// fsync before the rename. Rename is atomic with respect to concurrent
+	// readers, but without this the rename metadata can reach disk before the
+	// data blocks, so a crash or power loss can leave a zero-length or
+	// truncated tasks.json — with the whole matrix in it.
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	committed = true
+
+	// fsync the directory so the rename itself survives a crash. Best effort:
+	// some filesystems reject fsync on a directory, and a durability
+	// refinement must never be the reason a task fails to save.
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
+}
+
+// writeBackup keeps the previous contents alongside the data file before they
+// are replaced. Reads already refuse to overwrite a file they cannot parse, so
+// data is never silently clobbered — but there was no way back either, leaving
+// hand-editing JSON as the only recovery. This turns total loss into losing
+// one mutation.
+func writeBackup(path string) error {
+	prev, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path+".bak", prev, dataFileMode); err != nil {
+		return fmt.Errorf("writing backup: %w", err)
+	}
+	// WriteFile only applies the mode when creating, so tighten a .bak left
+	// behind by an older build.
+	_ = os.Chmod(path+".bak", dataFileMode)
+	return nil
 }
