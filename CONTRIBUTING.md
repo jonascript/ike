@@ -94,6 +94,13 @@ know up front.
   persisted.** They describe the document, and exist so a frontend can render an
   operation's outcome without a second read.
 
+## Platforms
+
+Linux and macOS only, and Windows is not planned — see the README's platform
+support section. If you do want to add Windows, the path resolution and the
+Windows CI coverage need to arrive together, or it is just untested surface in a
+different place.
+
 ## Pull requests
 
 - Keep the change focused; one concern per PR.

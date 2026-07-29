@@ -256,11 +256,25 @@ first: `--file`, then `IKE_DATA_FILE`, then the default above. Either must be an
 whatever directory the process happened to start in — not something you can
 predict when an MCP client launches ike for you).
 
-Linux and macOS are supported; Windows is untested (path resolution assumes
-XDG conventions). One caveat on the concurrency guarantee: it relies on
-advisory `flock`, which is unreliable on NFS and some FUSE mounts — so pointing
-`IKE_DATA_FILE` at a Dropbox, iCloud, or network-mounted folder and writing
-from two machines at once is not covered.
+One caveat on the concurrency guarantee: it relies on advisory `flock`, which is
+unreliable on NFS and some FUSE mounts — so pointing the data file at a Dropbox,
+iCloud, or network-mounted folder and writing from two machines at once is not
+covered. A single machine writing to a synced folder is fine.
+
+## Platform support
+
+**Linux and macOS.** Both run the full test suite on every change, and release
+archives are built for `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and
+`linux/arm64`.
+
+**Windows is not supported**, and is not on the roadmap. It is not built, not
+released, and not tested. `go install` will probably give you a working binary —
+nothing in ike is deliberately Unix-only — but the data file would land at
+`%USERPROFILE%\.local\share\ike\tasks.json`, following XDG conventions rather
+than anywhere a Windows user would think to look, and no Windows path is
+exercised by CI. So: unsupported rather than known-broken. A pull request adding
+proper path resolution *together with* Windows CI coverage would be welcome; one
+without the CI would just move the untested surface around.
 
 ## Contributing
 
