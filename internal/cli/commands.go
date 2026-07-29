@@ -28,6 +28,21 @@ func parseQuadrant(s string) (task.Quadrant, error) {
 	return task.Quadrant(q), nil
 }
 
+// inSpace names the space a command acted on, but only when --space was given.
+//
+// Without the flag the answer is always "the current space", which the user
+// just chose and does not need repeating. With it, the write went somewhere
+// other than where a bare `ike list` looks, and saying so is the difference
+// between capturing a task and losing track of it. Silent either way was the
+// alternative, and it makes `ike -s wrok done 3` indistinguishable from the
+// command you meant.
+func inSpace(cmd *cobra.Command, d store.Data) string {
+	if f := cmd.Flags().Lookup("space"); f == nil || !f.Changed {
+		return ""
+	}
+	return " in " + task.SanitizeDisplay(d.Space)
+}
+
 func printJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -61,8 +76,8 @@ func newAddCmd(open opener) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "added %d [%s] %s\n",
-				t.ID, d.Labels.Of(t.Quadrant), t.DisplayTitle())
+			fmt.Fprintf(cmd.OutOrStdout(), "added %d [%s] %s%s\n",
+				t.ID, d.Labels.Of(t.Quadrant), t.DisplayTitle(), inSpace(cmd, d))
 			return nil
 		}),
 	}
@@ -111,11 +126,11 @@ func newDoneCmd(open opener) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			t, _, err := s.Complete(id)
+			t, d, err := s.Complete(id)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "done %d  %s\n", t.ID, t.DisplayTitle())
+			fmt.Fprintf(cmd.OutOrStdout(), "done %d  %s%s\n", t.ID, t.DisplayTitle(), inSpace(cmd, d))
 			return nil
 		}),
 	}
@@ -139,8 +154,8 @@ func newMvCmd(open opener) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "moved %d to %d · %s\n",
-				t.ID, t.Quadrant, d.Labels.Of(t.Quadrant))
+			fmt.Fprintf(cmd.OutOrStdout(), "moved %d to %d · %s%s\n",
+				t.ID, t.Quadrant, d.Labels.Of(t.Quadrant), inSpace(cmd, d))
 			return nil
 		}),
 	}
@@ -156,11 +171,11 @@ func newRmCmd(open opener) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			t, _, err := s.Delete(id)
+			t, d, err := s.Delete(id)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "deleted %d  %s\n", t.ID, t.DisplayTitle())
+			fmt.Fprintf(cmd.OutOrStdout(), "deleted %d  %s%s\n", t.ID, t.DisplayTitle(), inSpace(cmd, d))
 			return nil
 		}),
 	}
@@ -180,8 +195,8 @@ func newRestoreCmd(open opener) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "restored %d to %d · %s  %s\n",
-				t.ID, t.Quadrant, d.Labels.Of(t.Quadrant), t.DisplayTitle())
+			fmt.Fprintf(cmd.OutOrStdout(), "restored %d to %d · %s  %s%s\n",
+				t.ID, t.Quadrant, d.Labels.Of(t.Quadrant), t.DisplayTitle(), inSpace(cmd, d))
 			return nil
 		}),
 	}
@@ -216,8 +231,8 @@ func newReorderCmd(open opener) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "moved %d %s %d · %s\n",
-				t.ID, where, t.Quadrant, d.Labels.Of(t.Quadrant))
+			fmt.Fprintf(cmd.OutOrStdout(), "moved %d %s %d · %s%s\n",
+				t.ID, where, t.Quadrant, d.Labels.Of(t.Quadrant), inSpace(cmd, d))
 			return nil
 		}),
 	}
@@ -226,14 +241,14 @@ func newReorderCmd(open opener) *cobra.Command {
 func newUndoCmd(open opener) *cobra.Command {
 	return &cobra.Command{
 		Use:   "undo",
-		Short: "Undo the last change made from any frontend (TUI, CLI, or MCP)",
+		Short: "Undo the last change to this space, from any frontend (TUI, CLI, or MCP)",
 		Args:  cobra.NoArgs,
 		RunE: withStore(open, func(cmd *cobra.Command, args []string, s *store.Store) error {
-			label, _, err := s.Undo()
+			label, d, err := s.Undo()
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "undid %s\n", label)
+			fmt.Fprintf(cmd.OutOrStdout(), "undid %s%s\n", label, inSpace(cmd, d))
 			return nil
 		}),
 	}
@@ -242,14 +257,14 @@ func newUndoCmd(open opener) *cobra.Command {
 func newRedoCmd(open opener) *cobra.Command {
 	return &cobra.Command{
 		Use:   "redo",
-		Short: "Re-apply the last undone change (until the next change discards it)",
+		Short: "Re-apply the last change undone in this space (until the next change discards it)",
 		Args:  cobra.NoArgs,
 		RunE: withStore(open, func(cmd *cobra.Command, args []string, s *store.Store) error {
-			label, _, err := s.Redo()
+			label, d, err := s.Redo()
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "redid %s\n", label)
+			fmt.Fprintf(cmd.OutOrStdout(), "redid %s%s\n", label, inSpace(cmd, d))
 			return nil
 		}),
 	}
@@ -282,11 +297,11 @@ func newLabelCmd(open opener) *cobra.Command {
 			if !reset && len(args) < 2 {
 				return fmt.Errorf("give a name to set, or --reset to restore the default")
 			}
-			result, _, err := s.SetQuadrantLabel(q, name)
+			result, d, err := s.SetQuadrantLabel(q, name)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "quadrant %d is now %s\n", q, result)
+			fmt.Fprintf(cmd.OutOrStdout(), "quadrant %d is now %s%s\n", q, result, inSpace(cmd, d))
 			return nil
 		}),
 	}

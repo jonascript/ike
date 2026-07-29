@@ -5,6 +5,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/jonascript/ike/internal/task"
 )
 
 // SpaceInfo describes one space for a picker or listing. It carries counts
@@ -71,4 +73,169 @@ func (f *File) spaceInfos() []SpaceInfo {
 		})
 	}
 	return out
+}
+
+// checkNewName validates a name for a space that does not exist yet.
+//
+// The collision check is case-insensitive even though lookup is not. Two spaces
+// differing only by case are indistinguishable at a glance in every listing,
+// and `-s Work` silently missing `work` is a worse outcome than being told the
+// name is taken. Rejecting them here is also what makes resolve's
+// case-insensitive fallback unambiguous.
+func (f *File) checkNewName(name string) error {
+	if err := task.ValidateSpaceName(name); err != nil {
+		return err
+	}
+	for have := range f.Spaces {
+		if strings.EqualFold(have, name) {
+			return fmt.Errorf("a space named %q already exists", have)
+		}
+	}
+	return nil
+}
+
+// The space operations below are deliberately **not undoable**. History is
+// per-space, so a document-level change has no stack to record onto, and a
+// stack that could resurrect a removed space would have to hold the whole
+// matrix. `tasks.json.bak` remains the recovery path for a removal, which is
+// why RemoveSpace makes the caller say the name and confirm the loss.
+
+// ListSpaces describes every space in the file, sorted by name.
+func (s *Store) ListSpaces() ([]SpaceInfo, error) {
+	f, err := readFile(s.path)
+	if err != nil {
+		return nil, s.redact(err)
+	}
+	if err := s.gate(&f); err != nil {
+		return nil, err
+	}
+	return f.spaceInfos(), nil
+}
+
+// NewSpace adds an empty space. It does not switch to it: creating a space from
+// a script should not change what the next bare `ike list` shows, and the two
+// steps read clearly enough separately.
+//
+// It returns the current space's data, unchanged apart from now listing the new
+// space, so a caller re-renders from the same value every other operation hands
+// back.
+func (s *Store) NewSpace(name string) (Data, error) {
+	name = strings.TrimSpace(name)
+	var out Data
+	_, err := s.mutateFile(func(f *File) error {
+		if err := f.checkNewName(name); err != nil {
+			return err
+		}
+		f.Spaces[name] = &Data{NextID: 1}
+		current, d, err := f.resolve(s.space)
+		if err != nil {
+			return err
+		}
+		out = f.dataFor(current, d)
+		return nil
+	})
+	return out, err
+}
+
+// UseSpace makes name the current space and returns its data, so the caller
+// renders the space it just switched to without a second read.
+func (s *Store) UseSpace(name string) (Data, error) {
+	name = strings.TrimSpace(name)
+	var out Data
+	_, err := s.mutateFile(func(f *File) error {
+		canonical, d, err := f.resolve(name)
+		if err != nil {
+			return err
+		}
+		f.Current = canonical
+		out = f.dataFor(canonical, d)
+		return nil
+	})
+	return out, err
+}
+
+// RenameSpace renames a space, following Current if it was the one renamed.
+// Nothing inside a space refers to it by name, so its history survives intact.
+func (s *Store) RenameSpace(from, to string) error {
+	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+	_, err := s.mutateFile(func(f *File) error {
+		canonical, d, err := f.resolve(from)
+		if err != nil {
+			return err
+		}
+		if canonical == to {
+			return nil
+		}
+		// Checked after resolving, so renaming a space to a different casing of
+		// its own name is not blocked by the space itself.
+		delete(f.Spaces, canonical)
+		if err := f.checkNewName(to); err != nil {
+			f.Spaces[canonical] = d
+			return err
+		}
+		f.Spaces[to] = d
+		if f.Current == canonical {
+			f.Current = to
+		}
+		return nil
+	})
+	return err
+}
+
+// RemoveSpace deletes a space and everything in it. It reports what was
+// destroyed, so a caller can say so afterwards.
+//
+// Unlike deleting a task this cannot be undone, so it refuses a space holding
+// anything unless force says otherwise, and it refuses the last space outright
+// — a file with no spaces is not a state any other code path is prepared for.
+// Removing the current space moves Current to the alphabetically first
+// survivor rather than leaving it dangling.
+func (s *Store) RemoveSpace(name string, force bool) (SpaceInfo, error) {
+	name = strings.TrimSpace(name)
+	var removed SpaceInfo
+	_, err := s.mutateFile(func(f *File) error {
+		canonical, d, err := f.resolve(name)
+		if err != nil {
+			return err
+		}
+		if len(f.Spaces) == 1 {
+			return fmt.Errorf("%q is the only space; there has to be one", canonical)
+		}
+		removed = SpaceInfo{
+			Name:     canonical,
+			Active:   len(d.Tasks),
+			Archived: len(d.Archive),
+			Current:  canonical == f.Current,
+		}
+		if !force && (removed.Active > 0 || removed.Archived > 0) {
+			return fmt.Errorf(
+				"%q still holds %s; pass --force to delete it anyway, or rename it aside",
+				canonical, countPhrase(removed.Active, removed.Archived))
+		}
+		delete(f.Spaces, canonical)
+		if f.Current == canonical {
+			f.Current = slices.Min(slices.Collect(maps.Keys(f.Spaces)))
+		}
+		return nil
+	})
+	return removed, err
+}
+
+// countPhrase describes a space's contents for a message about losing them.
+func countPhrase(active, archived int) string {
+	switch {
+	case active > 0 && archived > 0:
+		return fmt.Sprintf("%s and %s", plural(active, "active task"), plural(archived, "archived task"))
+	case archived > 0:
+		return plural(archived, "archived task")
+	default:
+		return plural(active, "active task")
+	}
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }

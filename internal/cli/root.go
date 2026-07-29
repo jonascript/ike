@@ -36,8 +36,25 @@ func withStore(open opener, run func(*cobra.Command, []string, *store.Store) err
 	}
 }
 
-// NewRootCmd builds the whole command tree against open.
-func NewRootCmd(open opener) *cobra.Command {
+// NewRootCmd builds the whole command tree against outer.
+func NewRootCmd(outer opener) *cobra.Command {
+	// space backs the --space flag. It is scoped to this call rather than being
+	// a package-level variable, so building a second tree — which every test
+	// does — cannot inherit a value from the first.
+	var space string
+
+	// Commands receive an opener that applies the flag, so none of them has to
+	// know the flag exists. InSpace("") follows the file's current space, which
+	// is what an unflagged Store already does, so there is nothing to branch on.
+	// It stays lazy: the flag is read inside RunE, after cobra has parsed it.
+	open := opener(func() (*store.Store, error) {
+		s, err := outer()
+		if err != nil {
+			return nil, err
+		}
+		return s.InSpace(space), nil
+	})
+
 	root := &cobra.Command{
 		Use:          "ike",
 		Short:        "ike — an Eisenhower matrix task manager",
@@ -48,6 +65,8 @@ func NewRootCmd(open opener) *cobra.Command {
 			return tui.Run(s)
 		}),
 	}
+	root.PersistentFlags().StringVarP(&space, "space", "s", "",
+		"act on this space instead of the current one")
 	root.AddCommand(
 		newAddCmd(open),
 		newListCmd(open),
@@ -61,6 +80,9 @@ func NewRootCmd(open opener) *cobra.Command {
 		newLabelCmd(open),
 		newArchiveCmd(open),
 		newMCPCmd(open),
+		// The space commands act on the document, so they take the store as it
+		// was opened, without the --space flag applied.
+		newSpaceCmd(outer),
 	)
 	return root
 }

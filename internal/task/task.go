@@ -3,6 +3,7 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -27,6 +28,11 @@ func (q Quadrant) Valid() bool {
 // MaxLabelLen bounds a custom quadrant label, so one long name cannot push
 // the TUI's quadrant headers out of their cells.
 const MaxLabelLen = 40
+
+// MaxSpaceNameLen bounds a space name. It is shorter than a quadrant label
+// because the name is a listing column, a TUI header, and something you type
+// after `-s` — all of which want it short.
+const MaxSpaceNameLen = 32
 
 // MaxTitleLen bounds a task title. The TUI's input widget caps what you can
 // type, but nothing constrained titles arriving from the CLI or from an MCP
@@ -81,6 +87,30 @@ func ValidateLabel(label string) error {
 	}
 	if r, bad := firstControlChar(label); bad {
 		return fmt.Errorf("quadrant label cannot contain control characters (found %#U)", r)
+	}
+	return nil
+}
+
+// ValidateSpaceName checks a user-supplied space name.
+//
+// Unlike ValidateLabel, a blank name is an error rather than a reset: a space
+// name is a key, not a display override, and an empty key is unreachable. The
+// caller is expected to have trimmed already — leading and trailing space is
+// rejected rather than silently accepted, or " work" and "work" would be two
+// different matrices that look identical in every listing.
+func ValidateSpaceName(name string) error {
+	if name == "" {
+		return errors.New("space name cannot be empty")
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("space name %q has leading or trailing whitespace", name)
+	}
+	if n := len([]rune(name)); n > MaxSpaceNameLen {
+		return fmt.Errorf("space name is %d characters; the maximum is %d",
+			n, MaxSpaceNameLen)
+	}
+	if r, bad := firstControlChar(name); bad {
+		return fmt.Errorf("space name cannot contain control characters (found %#U)", r)
 	}
 	return nil
 }

@@ -114,6 +114,12 @@ func newMCPStatusCmd(open opener) *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "MCP access: %s\n", mcpState(enabled))
 			fmt.Fprintf(out, "data file:  %s\n", s.Path())
+			// The setting covers the file, so it covers every space in it.
+			// Saying which spaces those are makes the scope concrete rather
+			// than leaving "this matrix" to be guessed at.
+			if spaces, err := s.ListSpaces(); err == nil {
+				fmt.Fprintf(out, "spaces:     %s\n", spaceSummary(spaces))
+			}
 			fmt.Fprintf(out, "change it:  %s\n", hint)
 			return nil
 		}),
