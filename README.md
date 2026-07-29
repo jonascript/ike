@@ -28,6 +28,62 @@ Those headings are defaults, not fixed: rename any quadrant with `t` in the TUI
 or `ike label`. The quadrant *numbers* never change, so scripts and the MCP
 tools keep working whatever you call them.
 
+## Spaces
+
+One data file holds several independent matrices, called **spaces** — work and
+personal, say. Each has its own tasks, archive, quadrant headings, ID numbering,
+and undo history, so `ike undo` in one can never reach into another. A fresh
+install has a single space named `default`, and nothing changes until you make
+a second.
+
+```sh
+ike space                       # list spaces, marking the current one
+ike space new work              # create it (does not switch)
+ike space use work              # switch; every later command follows
+ike space rename work job
+ike space rm work               # refuses a non-empty space without --force
+```
+
+Every command takes `-s/--space NAME` to act on one space just once, without
+switching:
+
+```sh
+ike add "Fix prod bug" -s work -q 1
+ike list -s work
+```
+
+Two concepts worth keeping apart: a **file** is a document and contains spaces;
+a **space** is one matrix inside it. `--file` picks the document, `--space` picks
+the matrix. In the TUI, `s` opens a space picker and `]`/`[` move between spaces.
+
+**Deleting a space cannot be undone.** History lives inside the space, so there
+is no stack left to revert from — which is why `ike space rm` names the counts it
+is about to destroy and needs `--force` if the space still holds anything. The
+previous file contents remain in `tasks.json.bak` until the next change.
+
+## Moving a matrix between machines
+
+The data file is self-contained and fully portable: nothing in it refers to a
+path or a machine, and timestamps are stored in UTC. Copy it to another computer
+and every space comes with it. The sidecar `.lock` and `.bak` files do not need
+copying.
+
+To move one space rather than the whole file:
+
+```sh
+ike space export work ~/work-matrix.json    # a standalone ike data file
+# copy that one file to the other machine, then:
+ike space import ~/work-matrix.json
+ike space import ~/old.json --as archive-2025
+ike --file ~/work-matrix.json list          # or just open it in place
+```
+
+An export is an ordinary data file, so `--file` opens it directly. **MCP access
+is always off in an exported file**, whatever it was in the original: agent
+access is a decision about a file on a machine, and an export is made to travel.
+Importing a name that is already in use is an error rather than a merge — use
+`--as` to bring it in under a different name.
+
 ## Install
 
 Requires Go 1.25+.
@@ -60,6 +116,9 @@ Run `ike` with no arguments.
 | `u` | undo the last change |
 | `U` / `ctrl+r` | redo |
 | `v` | archive view (`r` there restores a task) |
+| `s` | space picker (`enter` switch, `n` new, `r` rename, `d` twice delete) |
+| `]` / `[` | next / previous space |
+| `f` | data file picker (`o` there types a path) |
 | `?` | toggle help |
 | `q` | quit |
 
@@ -85,6 +144,10 @@ ike redo                        # re-apply the last undone change
 ike label                       # show the four quadrant headings
 ike label 1 "Firefighting"      # rename a quadrant
 ike label 1 --reset             # restore its default name
+
+ike space                       # spaces: see "Spaces" below
+ike list -s work                # act on one space just this once
+ike --file /path/to.json list   # act on a different data file
 ```
 
 ## Renaming the quadrants
@@ -106,6 +169,8 @@ Every change records a snapshot, so `ike undo` (or `u` in the TUI) reverts the
 last one — including a delete, and including changes made from a different
 frontend. Run it repeatedly to walk further back; the last 20 changes are kept
 in the data file, so history survives restarts. Undo does not recycle task IDs.
+History belongs to the space it was made in, so `ike undo` never reverts a change
+made in a different one.
 
 `ike redo` (or `U` / `ctrl+r`) re-applies what you just undid, and is itself
 undoable. **Any new change discards the redo history** — that includes a change
@@ -127,8 +192,11 @@ ike mcp status      # show the current setting and which data file it applies to
 ```
 
 The setting is remembered in the data file, so it survives restarts and
-upgrades, and it is scoped to that matrix: enabling access for your personal
-tasks does not enable it for a second matrix under `IKE_DATA_FILE`. It is not
+upgrades, and it is scoped to that **file** — which means every space in it.
+Enabling access for one space enables it for all of them; to keep a matrix out
+of reach, put it in a separate file (see [Spaces](#spaces)) or pin the server to
+one space with `ike -s work mcp`. Access never travels: a space you export
+always lands with it switched off. It is not
 part of undo history — no sequence of `ike undo` can re-open access you closed.
 While access is on, the TUI shows a `◆ mcp` marker in its footer, and `?`
 explains the setting either way.
@@ -147,7 +215,14 @@ the next thing an agent tries fails. It does not wait for the session to end.
 Once enabled, `ike mcp` runs an MCP server on stdio with tools `list_tasks`,
 `add_task`, `complete_task`, `move_task`, `reorder_task`, `update_task`,
 `delete_task`, `list_archive`, `restore_task`, `undo`, `redo`, `list_quadrants`,
-and `set_quadrant_label`.
+`set_quadrant_label`, and `list_spaces`.
+
+Every tool takes an optional `space` argument and defaults to whichever space
+you are on, so an agent can work in one matrix while you work in another. It is
+read-only about spaces: no tool can create, rename, delete, or switch one, since
+switching would change what your own TUI and a bare `ike list` show. Launching
+the server as `ike -s work mcp` pins it to that space — a request naming another
+is refused, and `list_spaces` then reports only the one it was launched for.
 
 Register with Claude Code:
 
@@ -175,8 +250,9 @@ contents are kept as `tasks.json.bak`, so an interrupted write costs at most
 one change rather than the whole matrix. If the file is ever unreadable, ike
 refuses to overwrite it rather than starting fresh over the top.
 
-Override the location with `IKE_DATA_FILE`, which must be an **absolute** path
-whose parent directory already exists (a relative path would resolve against
+Override the location with `--file` or `IKE_DATA_FILE` — highest precedence
+first: `--file`, then `IKE_DATA_FILE`, then the default above. Either must be an
+**absolute** path whose parent directory already exists (a relative path would resolve against
 whatever directory the process happened to start in — not something you can
 predict when an MCP client launches ike for you).
 

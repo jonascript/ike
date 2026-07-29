@@ -79,6 +79,20 @@ know up front.
   the stack it is walking.
 - **`MCPEnabled` is never in `Snapshot`.** Undo must not be able to re-open
   access someone revoked.
+- **`mutateFile` is the only write path.** `Mutate` is a thin wrapper that
+  resolves the space inside it; the space operations use `mutateFile` directly.
+  Giving either its own write path would duplicate all five properties above
+  where no test covers them.
+- **A space is everything a mutation can touch.** Tasks, archive, labels,
+  `NextID`, and both history stacks live inside `Data`; only `Version` and
+  `MCPEnabled` sit on the enclosing `File`. Undo is therefore per space, and
+  space lifecycle changes are deliberately not undoable.
+- **Space resolution never creates.** A name that is not in the file fails
+  before `fn` and before any write, which is what stops a typo conjuring an
+  empty matrix — and what keeps "no MCP tool can create a space" true.
+- **`Data`'s `Space`, `AllSpaces`, and `MCPAllowed` are derived, never
+  persisted.** They describe the document, and exist so a frontend can render an
+  operation's outcome without a second read.
 
 ## Pull requests
 

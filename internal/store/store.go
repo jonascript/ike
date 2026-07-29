@@ -14,8 +14,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,19 +48,48 @@ const lockRetryInterval = 25 * time.Millisecond
 
 // currentVersion is the schema version this build writes. Version 2 added
 // per-task ranks and the undo stack; version 3 stopped copying the whole
-// archive into every snapshot. Older files are upgraded in memory on read and
+// archive into every snapshot; version 4 wrapped the matrix in a document that
+// can hold several of them. Older files are upgraded in memory on read and
 // persisted at the current version by the next write.
 //
-// Version 3 is a real bump rather than a field added in place — the approach
+// Both 3 and 4 are real bumps rather than fields added in place — the approach
 // taken for `redo` — because the failure modes differ. Losing redo history to
 // an older binary is harmless; an older binary reading a v3 file would find no
 // "archive" in a snapshot, decode it as empty, and wipe the archive on the next
-// undo. Better that it refuse the file outright.
-const currentVersion = 3
+// undo, and one reading a v4 file would find no top-level "tasks" at all and
+// see an empty matrix it was about to overwrite. Better that it refuse the file
+// outright.
+const currentVersion = 4
 
-// Data is the full on-disk state.
+// defaultSpace names the space a single-matrix file is upgraded into, and the
+// one a fresh file starts with.
+const defaultSpace = "default"
+
+// File is the on-disk document: one or more independent matrices, and which of
+// them is current. Everything a mutation can touch lives inside a space, so
+// spaces are fully independent — tasks, archive, quadrant labels, the ID
+// counter, and both history stacks.
+//
+// MCPEnabled is the exception, and is deliberately document-wide. It is a
+// consent decision about a file ("I have decided to let my agent manage this"),
+// not a property of one matrix, and a per-space gate would mean an agent
+// holding access to one space could still see the names of the others.
+type File struct {
+	Version    int              `json:"version"`
+	Current    string           `json:"current"`
+	Spaces     map[string]*Data `json:"spaces"`
+	MCPEnabled bool             `json:"mcp_enabled,omitempty"`
+}
+
+// Data is one space: a complete matrix, and the unit every operation acts on.
+//
+// The three trailing fields are derived from the enclosing File on every read
+// and every mutation, and are never persisted. They exist because frontends
+// must render from the Data an operation returns rather than reading the file
+// again — a follow-up read observes a *later* file state — and rendering the
+// space header, the space picker, or the MCP marker needs facts that live on
+// the document rather than in the matrix.
 type Data struct {
-	Version int         `json:"version"`
 	NextID  int         `json:"next_id"`
 	Tasks   []task.Task `json:"tasks"`
 	Archive []task.Task `json:"archive"`
@@ -66,12 +97,20 @@ type Data struct {
 	Undo    []Snapshot  `json:"undo,omitempty"`
 	Redo    []Snapshot  `json:"redo,omitempty"`
 
-	// MCPEnabled gates the MCP server's access to this matrix. The zero value
-	// is false, so a fresh install — and any data file written before this
-	// field existed — starts with agent access switched off until the owner
-	// opts in. It is intentionally absent from Snapshot: undo moves tasks
-	// around, and must never quietly change who can reach them.
-	MCPEnabled bool `json:"mcp_enabled,omitempty"`
+	// Space is the name of the space this Data was read from.
+	Space string `json:"-"`
+	// AllSpaces describes every space in the file, sorted by name. It carries
+	// counts only: cloning per-task state N times is exactly what
+	// Snapshot.ArchiveEntry exists to undo.
+	AllSpaces []SpaceInfo `json:"-"`
+	// MCPAllowed reports whether agent access is on for the whole file.
+	//
+	// It is named differently from File.MCPEnabled on purpose. While the flag
+	// lived here, `d.MCPEnabled = on` inside a Mutate callback was how it was
+	// set; with the flag on the document that assignment would still compile,
+	// still report success, and persist nothing. The rename makes it a
+	// compile error instead of a silent no-op.
+	MCPAllowed bool `json:"-"`
 }
 
 // Labels holds user-chosen names for quadrants. It is sparse: only quadrants
@@ -123,8 +162,13 @@ type Snapshot struct {
 	ArchiveEntry *task.Task `json:"archive_entry,omitempty"`
 }
 
-func emptyData() Data {
-	return Data{Version: currentVersion, NextID: 1}
+// emptyFile is a fresh document: one empty space, which is current.
+func emptyFile() File {
+	return File{
+		Version: currentVersion,
+		Current: defaultSpace,
+		Spaces:  map[string]*Data{defaultSpace: {NextID: 1}},
+	}
 }
 
 // ErrMCPDisabled is returned to an MCP client whose access has been revoked.
@@ -137,8 +181,14 @@ type Store struct {
 	path     string
 	lockPath string
 
+	// space pins this Store to one space. Empty means "whichever the file
+	// records as current", resolved at read time — so a plain `ike list`
+	// follows `ike space use`, while a Store pinned with InSpace keeps acting
+	// on the same matrix no matter what another frontend switches to.
+	space string
+
 	// requireMCP marks this Store as serving an MCP client. Every read and
-	// every mutation then re-checks Data.MCPEnabled, so `ike mcp disable`
+	// every mutation then re-checks File.MCPEnabled, so `ike mcp disable`
 	// revokes a session that is already connected. Checking only at startup
 	// meant a long-lived client kept full access for as long as it stayed
 	// connected — hours or days — while `ike mcp status` reported "off".
@@ -161,8 +211,23 @@ func OpenAt(path string) *Store {
 	return &Store{path: path, lockPath: path + ".lock"}
 }
 
+// OpenPath returns a Store at a user-supplied path, validated the same way an
+// IKE_DATA_FILE override is. It backs `ike --file`.
+func OpenPath(source, path string) (*Store, error) {
+	p, err := CheckPath(source, path)
+	if err != nil {
+		return nil, err
+	}
+	return OpenAt(p), nil
+}
+
 // Path returns the data file path.
 func (s *Store) Path() string { return s.path }
+
+// Pinned returns the space this Store is pinned to, or "" if it follows the
+// file's current space. It lets a caller tell the two apart — the MCP server
+// refuses a request naming a different space than the one it was launched for.
+func (s *Store) Pinned() string { return s.space }
 
 // ForMCP returns a view of s that re-checks the access gate on every read and
 // mutation, and keeps the data file's location out of the errors it returns.
@@ -174,9 +239,26 @@ func (s *Store) ForMCP() *Store {
 	return &gated
 }
 
-// gate reports whether this Store may still touch d.
-func (s *Store) gate(d Data) error {
-	if s.requireMCP && !d.MCPEnabled {
+// InSpace returns a view of s pinned to one space, so it keeps acting on that
+// matrix whatever another frontend makes current. An empty name follows the
+// file's current space, which is what an unpinned Store already does — so
+// callers can pass a flag value straight through without branching.
+//
+// It never creates: naming a space that is not there fails on the next read or
+// mutation, before any write.
+func (s *Store) InSpace(name string) *Store {
+	pinned := *s
+	pinned.space = name
+	return &pinned
+}
+
+// gate reports whether this Store may still touch f.
+//
+// It is checked before the space is resolved, so a client whose access was
+// revoked is told exactly that rather than whether the space it asked for
+// exists — the error would otherwise enumerate the file's spaces for it.
+func (s *Store) gate(f *File) error {
+	if s.requireMCP && !f.MCPEnabled {
 		return ErrMCPDisabled
 	}
 	return nil
@@ -222,23 +304,83 @@ func (s *Store) ModTime() (mtime int64, err error) {
 	return fi.ModTime().UnixNano(), nil
 }
 
-// Load reads the current data without taking the write lock.
+// Load reads this Store's space without taking the write lock.
 func (s *Store) Load() (Data, error) {
-	d, err := readFile(s.path)
+	f, name, d, err := s.loadResolved(s.space)
 	if err != nil {
-		return Data{}, s.redact(err)
-	}
-	if err := s.gate(d); err != nil {
 		return Data{}, err
 	}
-	return d, nil
+	return f.dataFor(name, d), nil
 }
 
-// Mutate applies fn to a freshly-read copy of the data under an exclusive
-// lock, then atomically writes the result. It returns the post-mutation data.
-func (s *Store) Mutate(fn func(*Data) error) (data Data, err error) {
+// loadFile reads the document and checks the gate — everything a read does
+// before it needs to know which space it is about.
+//
+// Operations that describe the file rather than a matrix stop here. Listing the
+// spaces must keep working when the pinned one does not exist, since a listing
+// is how you find that out.
+func (s *Store) loadFile() (File, error) {
+	f, err := readFile(s.path)
+	if err != nil {
+		return File{}, s.redact(err)
+	}
+	if err := s.gate(&f); err != nil {
+		return File{}, err
+	}
+	return f, nil
+}
+
+// loadResolved is loadFile plus one resolved space, returned alongside the
+// document so a caller can use both.
+//
+// It exists so this ordering has one implementation. The gate runs before
+// resolution deliberately — a revoked client must be told access is off rather
+// than whether the space it named exists — and that ordering was previously
+// retyped in each read path, where a second copy could drift with nothing to
+// catch it.
+func (s *Store) loadResolved(space string) (File, string, *Data, error) {
+	f, err := s.loadFile()
+	if err != nil {
+		return File{}, "", nil, err
+	}
+	name, d, err := f.resolve(space)
+	if err != nil {
+		return File{}, "", nil, s.redact(err)
+	}
+	return f, name, d, nil
+}
+
+// Mutate applies fn to a freshly-read copy of this Store's space under an
+// exclusive lock, then atomically writes the whole document. It returns the
+// post-mutation data for that space.
+func (s *Store) Mutate(fn func(*Data) error) (Data, error) {
+	var out Data
+	_, err := s.mutateFile(func(f *File) error {
+		// Resolved inside the lock, and before fn, so a mutation naming a space
+		// that is not there fails without writing anything.
+		name, d, err := f.resolve(s.space)
+		if err != nil {
+			return err
+		}
+		if err := fn(d); err != nil {
+			return err
+		}
+		out = f.dataFor(name, d)
+		return nil
+	})
+	if err != nil {
+		return Data{}, err
+	}
+	return out, nil
+}
+
+// mutateFile applies fn to a freshly-read copy of the whole document under an
+// exclusive lock, then atomically writes it. It is the only write path: Mutate
+// and the space operations both go through it, so the lock discipline and the
+// five durability properties below have exactly one implementation.
+func (s *Store) mutateFile(fn func(*File) error) (file File, err error) {
 	if err := os.MkdirAll(filepath.Dir(s.path), dataDirMode); err != nil {
-		return Data{}, s.redact(err)
+		return File{}, s.redact(err)
 	}
 
 	lock := flock.New(s.lockPath)
@@ -250,11 +392,11 @@ func (s *Store) Mutate(fn func(*Data) error) (data Data, err error) {
 		// return, and "context deadline exceeded" tells the reader nothing
 		// about what to do.
 		if lerr == nil || errors.Is(lerr, context.DeadlineExceeded) {
-			return Data{}, s.redact(fmt.Errorf(
+			return File{}, s.redact(fmt.Errorf(
 				"timed out after %s waiting for another ike process to release %s",
 				lockTimeout, s.lockPath))
 		}
-		return Data{}, s.redact(fmt.Errorf("locking %s: %w", s.lockPath, lerr))
+		return File{}, s.redact(fmt.Errorf("locking %s: %w", s.lockPath, lerr))
 	}
 	defer func() {
 		// Surface an unlock failure only if the mutation itself succeeded, so
@@ -264,63 +406,99 @@ func (s *Store) Mutate(fn func(*Data) error) (data Data, err error) {
 		}
 	}()
 
-	data, err = readFile(s.path)
+	file, err = readFile(s.path)
 	if err != nil {
-		return Data{}, s.redact(err)
+		return File{}, s.redact(err)
 	}
 	// Re-checked inside the lock against the state just read, so a revocation
 	// that landed after this process started is honored.
-	if err = s.gate(data); err != nil {
-		return Data{}, err
+	if err = s.gate(&file); err != nil {
+		return File{}, err
 	}
-	if err = fn(&data); err != nil {
-		return Data{}, err
+	if err = fn(&file); err != nil {
+		return File{}, err
 	}
-	if err = writeFileAtomic(s.path, data); err != nil {
-		return Data{}, s.redact(err)
+	if err = writeFileAtomic(s.path, file); err != nil {
+		return File{}, s.redact(err)
 	}
-	return data, nil
+	return file, nil
 }
 
-func readFile(path string) (Data, error) {
+func readFile(path string) (File, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return emptyData(), nil
+		return emptyFile(), nil
 	}
 	if err != nil {
-		return Data{}, err
+		return File{}, err
 	}
-	var d Data
-	if err := json.Unmarshal(b, &d); err != nil {
-		return Data{}, fmt.Errorf("parsing %s: %w", path, err)
+	var f File
+	if err := json.Unmarshal(b, &f); err != nil {
+		return File{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	if d.Version < 1 || d.Version > currentVersion {
-		return Data{}, fmt.Errorf("%s has unsupported version %d (expected %d)", path, d.Version, currentVersion)
+	if f.Version < 1 || f.Version > currentVersion {
+		return File{}, fmt.Errorf("%s has unsupported version %d (expected %d)", path, f.Version, currentVersion)
 	}
+
 	// Older files are upgraded in memory; the next write persists the upgrade.
 	//
-	// History from before version 3 is dropped rather than reinterpreted. Those
-	// snapshots stored a whole archive and no ArchiveEntry, so undoing a restore
-	// recorded by an older build would silently lose that entry's completion
-	// stamp. Losing undo history on a one-time upgrade is a far better outcome
-	// than quietly losing an archived task, and the tasks themselves are
-	// untouched either way.
-	if d.Version < 3 {
-		d.Undo, d.Redo = nil, nil
+	// The discriminator is the version, never `spaces == nil`. A single-matrix
+	// file carries `version` and `mcp_enabled` at the same top level the
+	// envelope does, so it has already decoded into the right two fields and
+	// the body only needs re-reading as one space. Going by the missing key
+	// instead would quietly accept a truncated or hand-edited v4 file as an
+	// empty matrix, and the next write would erase the lot.
+	if f.Version < currentVersion {
+		var d Data
+		if err := json.Unmarshal(b, &d); err != nil {
+			return File{}, fmt.Errorf("parsing %s: %w", path, err)
+		}
+		// History from before version 3 is dropped rather than reinterpreted.
+		// Those snapshots stored a whole archive and no ArchiveEntry, so undoing
+		// a restore recorded by an older build would silently lose that entry's
+		// completion stamp. Losing undo history on a one-time upgrade is a far
+		// better outcome than quietly losing an archived task, and the tasks
+		// themselves are untouched either way.
+		if f.Version < 3 {
+			d.Undo, d.Redo = nil, nil
+		}
+		f.Spaces = map[string]*Data{defaultSpace: &d}
+		f.Current = defaultSpace
 	}
-	d.Version = currentVersion
-	if d.NextID < 1 {
-		d.NextID = 1
+	if len(f.Spaces) == 0 {
+		return File{}, fmt.Errorf("%s has no spaces", path)
 	}
-	// Before normalizeRanks, so a task rescued from an invalid quadrant gets a
-	// rank in the quadrant it lands in.
-	clampQuadrants(&d)
-	normalizeRanks(&d)
-	return d, nil
+	f.Version = currentVersion
+
+	for name, d := range f.Spaces {
+		if d == nil {
+			return File{}, fmt.Errorf("%s has an empty space %q", path, name)
+		}
+		if d.NextID < 1 {
+			d.NextID = 1
+		}
+		// Before normalizeRanks, so a task rescued from an invalid quadrant gets
+		// a rank in the quadrant it lands in.
+		clampQuadrants(d)
+		// Every space, not just the one about to be read. A write persists them
+		// all, so a space left un-normalized would have its pre-rank ordering
+		// rewritten by whichever mutation happened to touch a different space.
+		normalizeRanks(d)
+	}
+	// A current that names nothing — a hand edit, or a space removed by a build
+	// that did not follow it — would otherwise break every command until it was
+	// fixed by hand. Repair it the way an out-of-range NextID is repaired. An
+	// explicitly requested space that is missing still fails: "the file is
+	// inconsistent" and "you asked for something that is not there" are
+	// different situations and deserve different answers.
+	if _, ok := f.Spaces[f.Current]; !ok {
+		f.Current = slices.Min(slices.Collect(maps.Keys(f.Spaces)))
+	}
+	return f, nil
 }
 
-func writeFileAtomic(path string, d Data) error {
-	b, err := json.MarshalIndent(d, "", "  ")
+func writeFileAtomic(path string, doc File) error {
+	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}

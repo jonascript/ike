@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -20,6 +21,28 @@ const (
 	modeInput
 	modeMove
 	modeArchive
+	modeSpaces
+	modeFiles
+)
+
+// inputPurpose says what the shared text input is currently collecting.
+//
+// This used to be inferred from whether editingID and labelTarget were zero, in
+// a priority-ordered switch duplicated in three places. That works for three
+// purposes and stops working at five: the prompt, the commit, and the success
+// message would each have to agree on the same implicit ordering, and a new
+// purpose that happened to leave both fields zero would silently be read as
+// "add a task".
+type inputPurpose int
+
+const (
+	inputNone inputPurpose = iota
+	inputAddTask
+	inputEditTask
+	inputRenameQuadrant
+	inputNewSpace
+	inputRenameSpace
+	inputOpenFile
 )
 
 // refreshInterval is how often the TUI checks the data file for changes
@@ -37,12 +60,19 @@ type Model struct {
 	cursor map[task.Quadrant]int
 
 	mode        mode
+	inputBack   mode // mode to return to when input mode ends
 	input       textinput.Model
-	editingID   int           // 0 while adding, task ID while editing
-	labelTarget task.Quadrant // non-zero while renaming a quadrant heading
+	purpose     inputPurpose  // what the input is collecting
+	editingID   int           // task being edited, while purpose is inputEditTask
+	labelTarget task.Quadrant // quadrant being renamed, while purpose is inputRenameQuadrant
+	spaceTarget string        // space being renamed, while purpose is inputRenameSpace
 
-	pendingDelete int // task ID awaiting second `d` press
+	pendingDelete int    // task ID awaiting a second `d` press
+	pendingSpace  string // space name awaiting a second `d` press in the picker
 	archCursor    int
+	spaceCursor   int
+	fileCursor    int
+	recent        []string // data files opened before, most recent first
 	showHelp      bool
 
 	status  string
@@ -55,15 +85,25 @@ type Model struct {
 }
 
 // New builds a Model backed by s.
+//
+// The store is pinned to whichever space it resolved to, so the TUI keeps acting
+// on the matrix it is displaying. Left unpinned it would re-resolve the file's
+// current space on every keypress, and an `ike space use` from another terminal
+// would silently redirect the next `x` into a matrix that is not on screen. The
+// poll still follows such a switch — but at a point where it can re-render at
+// the same time.
 func New(s *store.Store) (Model, error) {
 	data, err := s.Load()
 	if err != nil {
 		return Model{}, err
 	}
+	s = s.InSpace(data.Space)
 	mtime, _ := s.ModTime()
 
 	ti := textinput.New()
 	ti.CharLimit = 200
+
+	store.RememberRecent(s.Path())
 
 	return Model{
 		store:     s,
@@ -73,6 +113,7 @@ func New(s *store.Store) (Model, error) {
 		input:     ti,
 		isDark:    true,
 		lastMtime: mtime,
+		recent:    store.LoadRecent().Paths,
 	}, nil
 }
 
@@ -116,9 +157,11 @@ func (m *Model) clampCursors() {
 	}
 	// A count, not an index: ListArchive is a permutation of Archive, so the
 	// lengths agree. Anything that *indexes* must go through ListArchive.
-	if n := len(m.data.Archive); m.archCursor >= n {
-		m.archCursor = max(n-1, 0)
-	}
+	clampCursor(&m.archCursor, len(m.data.Archive))
+	// The picker lists can shrink under an open picker — another frontend
+	// removing a space, or a recent file that has since been deleted.
+	clampCursor(&m.spaceCursor, len(m.data.AllSpaces))
+	clampCursor(&m.fileCursor, len(m.recent))
 }
 
 // refresh replaces the model's data and re-clamps cursors.
@@ -202,6 +245,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loadErr = err.Error()
 			} else {
 				m.loadErr = ""
+				m.followCurrentSpace(&d)
 				m.refresh(d)
 			}
 		}
@@ -221,17 +265,24 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleMoveKey(msg)
 	case modeArchive:
 		return m.handleArchiveKey(msg)
+	case modeSpaces:
+		return m.handleSpacesKey(msg)
+	case modeFiles:
+		return m.handleFilesKey(msg)
 	}
 	return m.handleNormalKey(msg)
 }
 
-// enterInput switches to input mode with all four pieces of input state set
+// enterInput switches to input mode with every piece of input state set
 // together. Setting them one at a time across the call sites left the previous
 // session's placeholder visible in the next one.
-func (m *Model) enterInput(editingID int, labelTarget task.Quadrant, value, placeholder string) tea.Cmd {
+//
+// back is the mode to return to on confirm or cancel: a prompt raised from the
+// space picker belongs back in the picker, not on the matrix.
+func (m *Model) enterInput(p inputPurpose, back mode, value, placeholder string) tea.Cmd {
 	m.mode = modeInput
-	m.editingID = editingID
-	m.labelTarget = labelTarget
+	m.purpose = p
+	m.inputBack = back
 	m.input.SetValue(value)
 	m.input.Placeholder = placeholder
 	m.input.CursorEnd()
@@ -239,12 +290,14 @@ func (m *Model) enterInput(editingID int, labelTarget task.Quadrant, value, plac
 	return m.input.Focus()
 }
 
-// exitInput returns to normal mode and clears the input state, so nothing from
-// this session can leak into the next one.
+// exitInput leaves input mode and clears the input state, so nothing from this
+// session can leak into the next one.
 func (m *Model) exitInput() {
-	m.mode = modeNormal
+	m.mode = m.inputBack
+	m.purpose = inputNone
 	m.editingID = 0
 	m.labelTarget = 0
+	m.spaceTarget = ""
 	m.input.Blur()
 }
 
@@ -286,15 +339,17 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.reorder(1)
 
 	case key.Matches(msg, keys.Add):
-		return m, m.enterInput(0, 0, "", "task title")
+		return m, m.enterInput(inputAddTask, modeNormal, "", "task title")
 
 	case key.Matches(msg, keys.Edit):
 		if t, ok := m.selected(); ok {
-			return m, m.enterInput(t.ID, 0, t.Title, "task title")
+			m.editingID = t.ID
+			return m, m.enterInput(inputEditTask, modeNormal, t.Title, "task title")
 		}
 
 	case key.Matches(msg, keys.Title):
-		return m, m.enterInput(0, m.focus, m.data.Labels.Of(m.focus),
+		m.labelTarget = m.focus
+		return m, m.enterInput(inputRenameQuadrant, modeNormal, m.data.Labels.Of(m.focus),
 			"quadrant name (empty resets to the default)")
 
 	case key.Matches(msg, keys.Done):
@@ -330,6 +385,22 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeArchive
 		m.archCursor = 0
 
+	case key.Matches(msg, keys.Spaces):
+		m.mode = modeSpaces
+		m.status = ""
+		m.cursorToSpace(m.data.Space)
+
+	case key.Matches(msg, keys.Files):
+		m.mode = modeFiles
+		m.status = ""
+		m.fileCursor = 0
+
+	case key.Matches(msg, keys.NextSpace):
+		m.cycleSpace(1)
+
+	case key.Matches(msg, keys.PrevSpace):
+		m.cycleSpace(-1)
+
 	case key.Matches(msg, keys.Help):
 		m.showHelp = !m.showHelp
 	}
@@ -344,25 +415,47 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.Confirm):
 		value := m.input.Value()
-		editing, target := m.editingID, m.labelTarget
+		purpose, editing := m.purpose, m.editingID
+		target, spaceName := m.labelTarget, m.spaceTarget
 
 		var d store.Data
 		var err error
-		switch {
-		case target != 0:
+		switch purpose {
+		case inputRenameQuadrant:
 			_, d, err = m.store.SetQuadrantLabel(target, value)
-		case editing == 0:
-			_, d, err = m.store.Add(value, m.focus)
-		default:
+		case inputEditTask:
 			_, d, err = m.store.Rename(editing, value)
+		case inputNewSpace:
+			d, err = m.store.NewSpace(value)
+		case inputRenameSpace:
+			// RenameSpace returns no Data — nothing renders from it — so the
+			// state to re-render from comes from a plain read afterwards.
+			if err = m.store.RenameSpace(spaceName, value); err == nil {
+				d, err = m.store.Load()
+			}
+		case inputOpenFile:
+			// Opening a file replaces the store rather than writing to it, so it
+			// bypasses apply entirely and reports for itself.
+			m.exitInput()
+			m.mode = modeNormal
+			m.openFile(strings.TrimSpace(value))
+			return m, nil
+		default:
+			_, d, err = m.store.Add(value, m.focus)
 		}
 
 		if m.apply(d, err) {
 			m.status = ""
-			switch {
-			case target != 0:
+			switch purpose {
+			case inputRenameQuadrant:
 				m.status = fmt.Sprintf("quadrant %d is now %q", target, m.data.Labels.Of(target))
-			case editing == 0:
+			case inputNewSpace:
+				m.status = fmt.Sprintf("created space %q", task.SanitizeDisplay(value))
+				m.cursorToSpace(value)
+			case inputRenameSpace:
+				m.status = fmt.Sprintf("renamed space to %q", task.SanitizeDisplay(value))
+				m.cursorToSpace(value)
+			case inputAddTask:
 				// Move the cursor to the task just added (last in its quadrant).
 				m.cursor[m.focus] = max(len(m.data.List(m.focus))-1, 0)
 			}
@@ -391,6 +484,9 @@ func (m Model) handleMoveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleArchiveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if moveCursor(&m.archCursor, len(m.data.Archive), msg) {
+		return m, nil
+	}
 	switch {
 	case key.Matches(msg, keys.Quit), key.Matches(msg, keys.Cancel), key.Matches(msg, keys.Archive):
 		m.mode = modeNormal
@@ -404,15 +500,6 @@ func (m Model) handleArchiveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("restored %q to %d · %s",
 					t.DisplayTitle(), t.Quadrant, m.data.Labels.Of(t.Quadrant))
 			}
-		}
-
-	case key.Matches(msg, keys.Down):
-		if m.archCursor < len(m.data.Archive)-1 {
-			m.archCursor++
-		}
-	case key.Matches(msg, keys.Up):
-		if m.archCursor > 0 {
-			m.archCursor--
 		}
 	}
 	return m, nil

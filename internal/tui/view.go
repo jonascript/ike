@@ -14,8 +14,12 @@ import (
 )
 
 const (
-	minWidth  = 40
-	minHeight = 10
+	minWidth = 40
+	// minHeight fits one task row: 2 footer rows, the space header, the axis
+	// labels, and two 4-row cells — a border pair, a quadrant heading, and the
+	// row itself. Below this renderTaskLines has nothing to draw in and the
+	// matrix shows headings over empty boxes.
+	minHeight = 12
 )
 
 // quadrantColor returns the accent color for a quadrant, adapted to the
@@ -50,12 +54,18 @@ func (m Model) render() string {
 	if m.mode == modeArchive {
 		return m.renderArchive()
 	}
+	if m.mode == modeSpaces {
+		return m.renderSpaces()
+	}
+	if m.mode == modeFiles {
+		return m.renderFiles()
+	}
 
 	footer := m.renderFooter()
 	footerH := lipgloss.Height(footer)
 
 	const gutterW = 2               // vertical axis labels: letter + space
-	gridH := m.height - footerH - 1 // 1 row for the top axis labels
+	gridH := m.height - footerH - 2 // space header + top axis labels
 
 	cellW := (m.width - gutterW) / 2
 	cellH := gridH / 2
@@ -77,7 +87,80 @@ func (m Model) render() string {
 		lipgloss.JoinHorizontal(lipgloss.Top, topGutter, q1, q2),
 		lipgloss.JoinHorizontal(lipgloss.Top, botGutter, q3, q4),
 	)
-	return lipgloss.JoinVertical(lipgloss.Left, header, grid, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, m.renderSpaceHeader(), header, grid, footer)
+}
+
+// renderSpaceHeader names the space on screen. Without it there is nothing on
+// the matrix that says which one you are looking at, and the four quadrants of
+// two different spaces look alike.
+func (m Model) renderSpaceHeader() string {
+	// Styled as one run rather than bolding the name alone, so the rendered text
+	// stays contiguous: everything that reads this screen, tests included, can
+	// then match on "space <name>".
+	line := lipgloss.NewStyle().Bold(true).Render("space " + task.SanitizeDisplay(m.data.Space))
+	if n := len(m.data.AllSpaces); n > 1 {
+		at := 1
+		for i, sp := range m.data.AllSpaces {
+			if sp.Name == m.data.Space {
+				at = i + 1
+			}
+		}
+		counter := lipgloss.NewStyle().Foreground(m.dimColor()).
+			Render(fmt.Sprintf("%d of %d · s to switch", at, n))
+		if used := ansi.StringWidth(line) + 1 + ansi.StringWidth(counter); used <= m.width {
+			line += strings.Repeat(" ", m.width-used+1) + counter
+		}
+	}
+	return ansi.Truncate(line, m.width, "…")
+}
+
+// renderSpaces is the space picker: a full-screen list, in the shape of the
+// archive view, that can also create, rename, and delete what it lists.
+func (m Model) renderSpaces() string {
+	spaces := m.data.AllSpaces
+	width := 0
+	for _, sp := range spaces {
+		width = max(width, ansi.StringWidth(task.SanitizeDisplay(sp.Name)))
+	}
+	rows := make([]string, len(spaces))
+	for i, sp := range spaces {
+		// The current space is where every other frontend acts, so it is marked
+		// even when the cursor is elsewhere in the list.
+		current := " "
+		if sp.Current {
+			current = "•"
+		}
+		rows[i] = fmt.Sprintf("  %s %-*s  %d active, %d archived",
+			current, width, task.SanitizeDisplay(sp.Name), sp.Active, sp.Archived)
+	}
+	return m.renderList(listView{
+		title:  fmt.Sprintf("Spaces — %d", len(spaces)),
+		rows:   rows,
+		cursor: m.spaceCursor,
+		hint:   "enter switch · n new · r rename · d twice delete · j/k select · s/esc/q back",
+	})
+}
+
+// renderFiles is the data file picker: the files opened before, and a way to
+// type a path that is not among them.
+func (m Model) renderFiles() string {
+	rows := make([]string, len(m.recent))
+	for i, path := range m.recent {
+		// The file in use is marked even when the cursor is elsewhere.
+		gutter := "    "
+		if path == m.store.Path() {
+			gutter = "  • "
+		}
+		rows[i] = gutter + path
+	}
+	return m.renderList(listView{
+		title:  "Data files",
+		header: []string{lipgloss.NewStyle().Foreground(m.dimColor()).Render("current: " + m.store.Path()), ""},
+		rows:   rows,
+		empty:  "no other files opened yet — press o to type a path",
+		cursor: m.fileCursor,
+		hint:   "enter open · o type a path · j/k select · f/esc/q back",
+	})
 }
 
 // center pads s to width w, centered.
@@ -178,11 +261,17 @@ func (m Model) renderFooter() string {
 	switch m.mode {
 	case modeInput:
 		verb := fmt.Sprintf("add to %d · %s", m.focus, m.data.Labels.Of(m.focus))
-		switch {
-		case m.labelTarget != 0:
+		switch m.purpose {
+		case inputRenameQuadrant:
 			verb = fmt.Sprintf("rename quadrant %d", m.labelTarget)
-		case m.editingID != 0:
+		case inputEditTask:
 			verb = fmt.Sprintf("edit %d", m.editingID)
+		case inputNewSpace:
+			verb = "new space"
+		case inputRenameSpace:
+			verb = fmt.Sprintf("rename space %s", task.SanitizeDisplay(m.spaceTarget))
+		case inputOpenFile:
+			verb = "open data file"
 		}
 		status = fmt.Sprintf("%s: %s", verb, m.input.View())
 	default:
@@ -201,7 +290,7 @@ func (m Model) renderFooter() string {
 		undoHelp = "u undo · U redo"
 	}
 	help := "a add · e edit · x done · m move · J/K reorder · d delete · " +
-		undoHelp + " · v archive · ? help · q quit"
+		undoHelp + " · v archive · s spaces · ? help · q quit"
 	if m.showHelp {
 		help = strings.Join([]string{
 			"1-4 focus quadrant · tab/shift+tab cycle · j/k or ↑/↓ select task",
@@ -210,6 +299,10 @@ func (m Model) renderFooter() string {
 			"J/K or shift+↑/↓ reorder within quadrant · u undo last change (any frontend)",
 			"U or ctrl+r redo, until the next change discards it",
 			"d twice delete permanently · v archive view (r there restores) · ? close help · q quit",
+			"s spaces: switch matrix, or n/r/dd to add, rename, delete · ]/[ next/prev space",
+			"each space keeps its own tasks, headings, and history",
+			"space changes are not undoable, unlike changes to tasks",
+			"f data files: switch to another matrix file, or o to type a path",
 			m.mcpHelpLine(),
 		}, "\n")
 	}
@@ -229,7 +322,7 @@ func (m Model) renderFooter() string {
 // mcpHelpLine states the current MCP access setting and the command that
 // changes it. It names the marker so the footer symbol is self-explaining.
 func (m Model) mcpHelpLine() string {
-	if m.data.MCPEnabled {
+	if m.data.MCPAllowed {
 		return mcpIndicator + " AI agents can manage this matrix over MCP · turn off with: ike mcp disable"
 	}
 	return "AI agent access (MCP) is off · turn on with: ike mcp enable"
@@ -242,7 +335,7 @@ const mcpIndicator = "◆ mcp"
 // withMCPIndicator right-aligns the indicator on a footer line, if access is
 // on and the line has room for it. Too narrow, and the status text wins.
 func (m Model) withMCPIndicator(line string) string {
-	if !m.data.MCPEnabled {
+	if !m.data.MCPAllowed {
 		return line
 	}
 	used := ansi.StringWidth(line)
@@ -255,33 +348,18 @@ func (m Model) withMCPIndicator(line string) string {
 }
 
 func (m Model) renderArchive() string {
-	dim := lipgloss.NewStyle().Foreground(m.dimColor())
-	title := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("Archive — %d completed", len(m.data.Archive)))
-
 	// Newest completion first, matching `ike archive`.
 	arch := m.data.ListArchive()
-
-	visible := m.height - 4 // title + blank + status + footer
-	offset := 0
-	if m.archCursor >= visible {
-		offset = m.archCursor - visible + 1
+	rows := make([]string, len(arch))
+	for i, t := range arch {
+		rows[i] = t.ArchiveRow(ansi.Truncate(t.DisplayTitle(), max(m.width-20, 4), "…"))
 	}
-
-	lines := []string{title, ""}
-	if len(arch) == 0 {
-		lines = append(lines, dim.Italic(true).Render("nothing completed yet"))
-	}
-	for i := offset; i < len(arch) && i-offset < visible; i++ {
-		t := arch[i]
-		line := t.ArchiveRow(ansi.Truncate(t.DisplayTitle(), max(m.width-20, 4), "…"))
-		if i == m.archCursor {
-			line = lipgloss.NewStyle().Bold(true).Render("▸" + line[1:])
-		}
-		lines = append(lines, line)
-	}
-	lines = append(lines,
-		ansi.Truncate(m.status, m.width, "…"),
-		dim.Render("r restore to its quadrant · j/k scroll · v/esc/q back"),
-	)
-	return strings.Join(lines, "\n")
+	return m.renderList(listView{
+		title: fmt.Sprintf("Archive — %d completed in %s",
+			len(arch), task.SanitizeDisplay(m.data.Space)),
+		rows:   rows,
+		empty:  "nothing completed yet",
+		cursor: m.archCursor,
+		hint:   "r restore to its quadrant · j/k scroll · v/esc/q back",
+	})
 }

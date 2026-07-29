@@ -224,22 +224,27 @@ func (d Data) QuadrantLabels() Labels {
 // It also does not return Data the way the task operations do — nothing
 // renders a result from it, and handing an MCP-gated caller a full copy of the
 // matrix from the call that flips the gate would be a poor shape.
+// It goes through mutateFile rather than Mutate, and reads the file directly
+// rather than through Load, because the setting belongs to the document rather
+// than to any one space. That also keeps `ike mcp enable` working when the
+// current space is missing or a --space flag names something that is not there:
+// consent is not a per-matrix question.
 func (s *Store) SetMCPEnabled(on bool) (changed bool, err error) {
-	_, err = s.Mutate(func(d *Data) error {
-		changed = d.MCPEnabled != on
-		d.MCPEnabled = on
+	_, err = s.mutateFile(func(f *File) error {
+		changed = f.MCPEnabled != on
+		f.MCPEnabled = on
 		return nil
 	})
 	return changed, err
 }
 
-// MCPEnabled reports whether the MCP server may serve this matrix.
+// MCPEnabled reports whether the MCP server may serve this file.
 func (s *Store) MCPEnabled() (bool, error) {
-	d, err := s.Load()
+	f, err := readFile(s.path)
 	if err != nil {
-		return false, err
+		return false, s.redact(err)
 	}
-	return d.MCPEnabled, nil
+	return f.MCPEnabled, nil
 }
 
 // Rename changes a task's title.

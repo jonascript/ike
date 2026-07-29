@@ -24,6 +24,19 @@ type keyMap struct {
 	Quit     key.Binding
 	Confirm  key.Binding
 	Cancel   key.Binding
+
+	// Space keys. NewSpace and RenameSpace are live only inside the picker, so
+	// `n` and `r` stay free on the matrix and `r` does not collide with the
+	// archive view's restore.
+	Spaces      key.Binding
+	NextSpace   key.Binding
+	PrevSpace   key.Binding
+	NewSpace    key.Binding
+	RenameSpace key.Binding
+
+	// File keys. OpenFile is live only inside the file picker.
+	Files    key.Binding
+	OpenFile key.Binding
 }
 
 var keys = keyMap{
@@ -48,4 +61,13 @@ var keys = keyMap{
 	Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	Confirm:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
 	Cancel:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+
+	Spaces:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "spaces")),
+	NextSpace:   key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "next space")),
+	PrevSpace:   key.NewBinding(key.WithKeys("["), key.WithHelp("[", "prev space")),
+	NewSpace:    key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new space")),
+	RenameSpace: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "rename space")),
+
+	Files:    key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "files")),
+	OpenFile: key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open a path")),
 }

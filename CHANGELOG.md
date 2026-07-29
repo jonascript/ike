@@ -11,6 +11,23 @@ tagged version.
 
 ### Added
 
+- **Spaces: several independent matrices in one data file.** Each has its own
+  tasks, archive, quadrant headings, ID numbering, and undo history, so `ike undo`
+  in one can never reach into another. `ike space list|new|use|rename|rm` manages
+  them, a root-level `--space/-s` acts on one just once without switching, and
+  `s` in the TUI opens a picker (`]`/`[` cycle). Existing files upgrade into a
+  single space named `default`.
+- **`--file/-f` to select a data file per command**, validated the same way
+  `IKE_DATA_FILE` is. Precedence: `--file`, then `IKE_DATA_FILE`, then the
+  default location. `f` in the TUI opens a picker of files opened before.
+- **`ike space export` and `ike space import`** to move a matrix between files or
+  machines. An export is an ordinary data file, so `--file` opens it directly.
+  MCP access is always off in an exported file: agent access is a decision about
+  a file on a machine, and an export is made to travel.
+- **`list_spaces` MCP tool, and an optional `space` argument on every tool.**
+  Read-only by design: no tool can create, rename, delete, or switch a space,
+  since switching would change what your own TUI shows. `ike -s work mcp` pins a
+  server to one space, and a request naming another is refused.
 - Bubble Tea TUI (`ike`) with a four-quadrant matrix, axis labels, an archive
   view, and inline help.
 - CLI subcommands: `add`, `list`, `done`, `mv`, `reorder`, `rm`, `archive`,
@@ -64,5 +81,17 @@ tagged version.
   to render stale data.
 - The TUI showed default quadrant names instead of renamed ones in two status
   messages.
+
+### Changed
+
+- The data file format is **version 4**, which wraps the matrix in a document
+  that can hold several. Older files upgrade in memory on read and are written
+  back at version 4 by the next change; an older ike binary refuses a version 4
+  file outright rather than misreading it.
+- `mcp_enabled` is scoped to the **file**, so it covers every space in it. The
+  README previously described the scope as the matrix, which is no longer the
+  same thing.
+- The TUI needs one more row than before (12 rather than 10), for the line that
+  names the current space.
 
 [Unreleased]: https://github.com/jonascript/ike/commits/main

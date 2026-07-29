@@ -5,6 +5,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,11 +18,30 @@ const quadrantDoc = "Eisenhower quadrant: 1=urgent and important, 2=important bu
 	"3=urgent but not important, 4=neither. The numbers are fixed; each quadrant's display name " +
 	"is user-customizable, so use the number to classify and quadrant_label only for display."
 
+const spaceDoc = " Optionally set space to work in a space other than the user's current one; " +
+	"omit it to use whichever space they are on. It must already exist — call list_spaces to see " +
+	"them. There is no tool for creating, renaming, deleting, or switching spaces: those are the " +
+	"user's to make."
+
+// spaceIn is embedded in every tool's input, giving them all the same optional
+// space argument. It is embedded by value: a pointer left nil by a request that
+// omits space would panic in spaceName, and a panic inside a handler surfaces
+// as a protocol error rather than the tool error a bad argument deserves.
+type spaceIn struct {
+	Space string `json:"space,omitempty" jsonschema:"optional space to act on; omit for the user's current space"`
+}
+
+func (s spaceIn) spaceName() string { return s.Space }
+
+// spaceArg is what taskTool and listTool need of an input: which space it names.
+type spaceArg interface{ spaceName() string }
+
 type taskOut struct {
 	ID       int    `json:"id" jsonschema:"task id"`
 	Title    string `json:"title"`
 	Quadrant int    `json:"quadrant" jsonschema:"quadrant 1-4"`
 	Label    string `json:"quadrant_label" jsonschema:"the quadrant's display name, which the user may have customized"`
+	Space    string `json:"space" jsonschema:"the space this task lives in"`
 	Created  string `json:"created_at"`
 	Done     string `json:"done_at,omitempty" jsonschema:"completion time, only set for archived tasks"`
 }
@@ -30,12 +50,18 @@ type taskOut struct {
 // JSON, and encoding/json escapes control characters itself. Label goes through
 // Labels.Of, which sanitizes — that is the store's render choke point, not a
 // policy chosen here.
-func toOut(t task.Task, labels store.Labels) taskOut {
+//
+// Both the label and the space name come from the Data the operation returned,
+// so they describe the state that operation produced rather than a later one.
+// Reporting the space matters most when it was defaulted: the agent then learns
+// which matrix it just wrote to without having to ask.
+func toOut(t task.Task, d store.Data) taskOut {
 	o := taskOut{
 		ID:       t.ID,
 		Title:    t.Title,
 		Quadrant: int(t.Quadrant),
-		Label:    labels.Of(t.Quadrant),
+		Label:    d.Labels.Of(t.Quadrant),
+		Space:    task.SanitizeDisplay(d.Space),
 		Created:  t.CreatedAt.Format(time.RFC3339),
 	}
 	if t.DoneAt != nil {
@@ -44,38 +70,44 @@ func toOut(t task.Task, labels store.Labels) taskOut {
 	return o
 }
 
-func toOuts(ts []task.Task, labels store.Labels) []taskOut {
+func toOuts(ts []task.Task, d store.Data) []taskOut {
 	out := make([]taskOut, len(ts))
 	for i, t := range ts {
-		out[i] = toOut(t, labels)
+		out[i] = toOut(t, d)
 	}
 	return out
 }
 
 type listIn struct {
+	spaceIn
 	Quadrant int `json:"quadrant,omitempty" jsonschema:"optional filter, 1-4; omit or 0 for all quadrants"`
 }
 
 type addIn struct {
+	spaceIn
 	Title    string `json:"title" jsonschema:"the task title"`
 	Quadrant int    `json:"quadrant" jsonschema:"required quadrant 1-4; pick based on urgency and importance"`
 }
 
 type idIn struct {
+	spaceIn
 	ID int `json:"id" jsonschema:"the task id"`
 }
 
 type moveIn struct {
+	spaceIn
 	ID       int `json:"id" jsonschema:"the task id"`
 	Quadrant int `json:"quadrant" jsonschema:"destination quadrant 1-4"`
 }
 
 type updateIn struct {
+	spaceIn
 	ID    int    `json:"id" jsonschema:"the task id"`
 	Title string `json:"title" jsonschema:"the new task title"`
 }
 
 type reorderIn struct {
+	spaceIn
 	ID        int    `json:"id" jsonschema:"the task id"`
 	Direction string `json:"direction" jsonschema:"where to move it within its quadrant: up, down, top, or bottom"`
 }
@@ -90,6 +122,7 @@ type undoOut struct {
 }
 
 type labelIn struct {
+	spaceIn
 	Quadrant int    `json:"quadrant" jsonschema:"the quadrant to rename, 1-4"`
 	Label    string `json:"label" jsonschema:"the new display name; pass an empty string to restore the built-in default"`
 }
@@ -103,7 +136,51 @@ type labelsOut struct {
 	Quadrants []quadrantOut `json:"quadrants"`
 }
 
+// spaceOnlyIn is for tools whose only argument is which space to act on.
+type spaceOnlyIn struct {
+	spaceIn
+}
+
+// emptyIn is for tools that take nothing at all — currently only list_spaces,
+// which describes the whole file.
 type emptyIn struct{}
+
+type spaceOut struct {
+	Name     string `json:"name"`
+	Active   int    `json:"active" jsonschema:"number of active tasks"`
+	Archived int    `json:"archived" jsonschema:"number of completed tasks in the archive"`
+	Current  bool   `json:"current" jsonschema:"whether this is the space the user is currently on"`
+}
+
+type spacesOut struct {
+	Spaces []spaceOut `json:"spaces"`
+}
+
+// withinPin reports whether a space is inside this server's scope.
+//
+// A server launched with an explicit space is a hard pin, and the pin bounds
+// what the agent can *see* as well as what it can write — so both the tool
+// dispatch and the space listing ask this one question rather than each
+// re-deriving it.
+func withinPin(s *store.Store, name string) bool {
+	pin := s.Pinned()
+	return pin == "" || strings.EqualFold(pin, name)
+}
+
+// spaceStore picks the store a tool call acts on.
+//
+// The user scoped this server to one matrix, and an agent reaching outside it
+// would defeat the point of having said so, so a request naming a different
+// space is refused rather than honored.
+func spaceStore(s *store.Store, want string) (*store.Store, error) {
+	if want == "" {
+		return s, nil
+	}
+	if !withinPin(s, want) {
+		return nil, fmt.Errorf("this server is limited to the %q space and cannot act on %q", s.Pinned(), want)
+	}
+	return s.InSpace(want), nil
+}
 
 // directionDelta maps a reorder_task direction onto a Reorder delta.
 func directionDelta(dir string) (int, error) {
@@ -127,25 +204,38 @@ func directionDelta(dir string) (int, error) {
 // The store operation returns the post-mutation data alongside the task, so the
 // quadrant label rendered here comes from the state the change produced — not
 // from a second read that could observe a later one.
-func taskTool[In any](srv *mcp.Server, spec *mcp.Tool, op func(In) (task.Task, store.Data, error)) {
+//
+// op receives the store already resolved to the requested space, so the space
+// argument is applied in one place rather than being re-read in each of the
+// eight closures — where forgetting it once would silently write to the wrong
+// matrix.
+func taskTool[In spaceArg](srv *mcp.Server, s *store.Store, spec *mcp.Tool, op func(*store.Store, In) (task.Task, store.Data, error)) {
 	mcp.AddTool(srv, spec, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, taskOut, error) {
-		t, d, err := op(in)
+		sp, err := spaceStore(s, in.spaceName())
 		if err != nil {
 			return nil, taskOut{}, err
 		}
-		return nil, toOut(t, d.Labels), nil
+		t, d, err := op(sp, in)
+		if err != nil {
+			return nil, taskOut{}, err
+		}
+		return nil, toOut(t, d), nil
 	})
 }
 
 // listTool registers a tool that returns a list of tasks drawn from one read of
 // the store, so the tasks and the labels describing them agree.
-func listTool[In any](srv *mcp.Server, s *store.Store, spec *mcp.Tool, sel func(store.Data, In) []task.Task) {
+func listTool[In spaceArg](srv *mcp.Server, s *store.Store, spec *mcp.Tool, sel func(store.Data, In) []task.Task) {
 	mcp.AddTool(srv, spec, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, tasksOut, error) {
-		d, err := s.Load()
+		sp, err := spaceStore(s, in.spaceName())
 		if err != nil {
 			return nil, tasksOut{}, err
 		}
-		return nil, tasksOut{Tasks: toOuts(sel(d, in), d.Labels)}, nil
+		d, err := sp.Load()
+		if err != nil {
+			return nil, tasksOut{}, err
+		}
+		return nil, tasksOut{Tasks: toOuts(sel(d, in), d)}, nil
 	})
 }
 
@@ -155,64 +245,68 @@ func NewServer(s *store.Store, version string) *mcp.Server {
 
 	listTool(srv, s, &mcp.Tool{
 		Name:        "list_tasks",
-		Description: "List active tasks in the Eisenhower matrix, ordered by quadrant. " + quadrantDoc,
+		Description: "List active tasks in the Eisenhower matrix, ordered by quadrant. " + quadrantDoc + spaceDoc,
 	}, func(d store.Data, in listIn) []task.Task { return d.List(task.Quadrant(in.Quadrant)) })
 
 	listTool(srv, s, &mcp.Tool{
 		Name:        "list_archive",
-		Description: "List completed (archived) tasks, most recently completed first.",
-	}, func(d store.Data, in emptyIn) []task.Task { return d.ListArchive() })
+		Description: "List completed (archived) tasks, most recently completed first." + spaceDoc,
+	}, func(d store.Data, in spaceOnlyIn) []task.Task { return d.ListArchive() })
 
-	taskTool(srv, &mcp.Tool{
+	taskTool(srv, s, &mcp.Tool{
 		Name:        "add_task",
-		Description: "Add a task to the matrix. " + quadrantDoc,
-	}, func(in addIn) (task.Task, store.Data, error) {
-		return s.Add(in.Title, task.Quadrant(in.Quadrant))
+		Description: "Add a task to the matrix. " + quadrantDoc + spaceDoc,
+	}, func(sp *store.Store, in addIn) (task.Task, store.Data, error) {
+		return sp.Add(in.Title, task.Quadrant(in.Quadrant))
 	})
 
-	taskTool(srv, &mcp.Tool{
+	taskTool(srv, s, &mcp.Tool{
 		Name:        "complete_task",
-		Description: "Mark a task done. It moves from the active matrix to the archive.",
-	}, func(in idIn) (task.Task, store.Data, error) { return s.Complete(in.ID) })
+		Description: "Mark a task done. It moves from the active matrix to the archive." + spaceDoc,
+	}, func(sp *store.Store, in idIn) (task.Task, store.Data, error) { return sp.Complete(in.ID) })
 
-	taskTool(srv, &mcp.Tool{
+	taskTool(srv, s, &mcp.Tool{
 		Name:        "move_task",
-		Description: "Move a task to a different quadrant. " + quadrantDoc,
-	}, func(in moveIn) (task.Task, store.Data, error) {
-		return s.Move(in.ID, task.Quadrant(in.Quadrant))
+		Description: "Move a task to a different quadrant. " + quadrantDoc + spaceDoc,
+	}, func(sp *store.Store, in moveIn) (task.Task, store.Data, error) {
+		return sp.Move(in.ID, task.Quadrant(in.Quadrant))
 	})
 
-	taskTool(srv, &mcp.Tool{
+	taskTool(srv, s, &mcp.Tool{
 		Name:        "update_task",
-		Description: "Rename a task (change its title).",
-	}, func(in updateIn) (task.Task, store.Data, error) { return s.Rename(in.ID, in.Title) })
+		Description: "Rename a task (change its title)." + spaceDoc,
+	}, func(sp *store.Store, in updateIn) (task.Task, store.Data, error) { return sp.Rename(in.ID, in.Title) })
 
-	taskTool(srv, &mcp.Tool{
+	taskTool(srv, s, &mcp.Tool{
 		Name:        "delete_task",
-		Description: "Delete an active task permanently. Unlike complete_task, the task is NOT archived. Use for tasks that should never have existed; prefer complete_task for finished work.",
-	}, func(in idIn) (task.Task, store.Data, error) { return s.Delete(in.ID) })
+		Description: "Delete an active task permanently. Unlike complete_task, the task is NOT archived. Use for tasks that should never have existed; prefer complete_task for finished work." + spaceDoc,
+	}, func(sp *store.Store, in idIn) (task.Task, store.Data, error) { return sp.Delete(in.ID) })
 
-	taskTool(srv, &mcp.Tool{
+	taskTool(srv, s, &mcp.Tool{
 		Name:        "restore_task",
-		Description: "Un-archive a completed task: it returns to the active matrix in the quadrant it was completed in, at the bottom, with its completion time cleared.",
-	}, func(in idIn) (task.Task, store.Data, error) { return s.Restore(in.ID) })
+		Description: "Un-archive a completed task: it returns to the active matrix in the quadrant it was completed in, at the bottom, with its completion time cleared." + spaceDoc,
+	}, func(sp *store.Store, in idIn) (task.Task, store.Data, error) { return sp.Restore(in.ID) })
 
-	taskTool(srv, &mcp.Tool{
+	taskTool(srv, s, &mcp.Tool{
 		Name:        "reorder_task",
-		Description: "Change a task's position within its own quadrant. This does not change which quadrant it is in — use move_task for that.",
-	}, func(in reorderIn) (task.Task, store.Data, error) {
+		Description: "Change a task's position within its own quadrant. This does not change which quadrant it is in — use move_task for that." + spaceDoc,
+	}, func(sp *store.Store, in reorderIn) (task.Task, store.Data, error) {
 		delta, err := directionDelta(in.Direction)
 		if err != nil {
 			return task.Task{}, store.Data{}, err
 		}
-		return s.Reorder(in.ID, delta)
+		return sp.Reorder(in.ID, delta)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "undo",
-		Description: "Revert the single most recent change to the matrix, whichever frontend made it. Returns a description of what was undone. Call repeatedly to walk further back, and use redo to re-apply.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in emptyIn) (*mcp.CallToolResult, undoOut, error) {
-		label, _, err := s.Undo()
+		Description: "Revert the single most recent change to this space, whichever frontend made it. Returns a description of what was undone. Call repeatedly to walk further back, and use redo to re-apply. History is per space, so this never reverts a change made in a different one." + spaceDoc,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in spaceOnlyIn) (*mcp.CallToolResult, undoOut, error) {
+		sp, err := spaceStore(s, in.spaceName())
+		if err != nil {
+			return nil, undoOut{}, err
+		}
+		label, _, err := sp.Undo()
 		if err != nil {
 			return nil, undoOut{}, err
 		}
@@ -221,9 +315,13 @@ func NewServer(s *store.Store, version string) *mcp.Server {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "redo",
-		Description: "Re-apply the most recently undone change. Only available until the next change to the matrix, which discards the redo history — so making any edit after an undo permanently gives up the redo.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in emptyIn) (*mcp.CallToolResult, undoOut, error) {
-		label, _, err := s.Redo()
+		Description: "Re-apply the most recently undone change in this space. Only available until the next change to that space, which discards the redo history — so making any edit after an undo permanently gives up the redo." + spaceDoc,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in spaceOnlyIn) (*mcp.CallToolResult, undoOut, error) {
+		sp, err := spaceStore(s, in.spaceName())
+		if err != nil {
+			return nil, undoOut{}, err
+		}
+		label, _, err := sp.Redo()
 		if err != nil {
 			return nil, undoOut{}, err
 		}
@@ -233,9 +331,13 @@ func NewServer(s *store.Store, version string) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "list_quadrants",
 		Description: "List the four quadrants and their current display names. " +
-			"Useful before renaming one, or to show the user their own wording. " + quadrantDoc,
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in emptyIn) (*mcp.CallToolResult, labelsOut, error) {
-		labels, err := s.QuadrantLabels()
+			"Useful before renaming one, or to show the user their own wording. " + quadrantDoc + spaceDoc,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in spaceOnlyIn) (*mcp.CallToolResult, labelsOut, error) {
+		sp, err := spaceStore(s, in.spaceName())
+		if err != nil {
+			return nil, labelsOut{}, err
+		}
+		labels, err := sp.QuadrantLabels()
 		if err != nil {
 			return nil, labelsOut{}, err
 		}
@@ -249,13 +351,47 @@ func NewServer(s *store.Store, version string) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "set_quadrant_label",
 		Description: "Rename a quadrant's heading. This changes only the display name — it does not " +
-			"move tasks or change what the quadrant means. Pass an empty label to restore the default.",
+			"move tasks or change what the quadrant means. Pass an empty label to restore the default." + spaceDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in labelIn) (*mcp.CallToolResult, quadrantOut, error) {
-		label, _, err := s.SetQuadrantLabel(task.Quadrant(in.Quadrant), in.Label)
+		sp, err := spaceStore(s, in.spaceName())
+		if err != nil {
+			return nil, quadrantOut{}, err
+		}
+		label, _, err := sp.SetQuadrantLabel(task.Quadrant(in.Quadrant), in.Label)
 		if err != nil {
 			return nil, quadrantOut{}, err
 		}
 		return nil, quadrantOut{Quadrant: in.Quadrant, Label: label}, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "list_spaces",
+		Description: "List the spaces in the user's data file. A space is an independent matrix " +
+			"with its own tasks, archive, quadrant names, and undo history — for example separate " +
+			"work and personal matrices. Every other tool acts on the user's current space unless " +
+			"given a space argument. This is read-only: spaces are created, renamed, deleted, and " +
+			"switched by the user, never by a tool.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in emptyIn) (*mcp.CallToolResult, spacesOut, error) {
+		// Through the gated store, so a revoked client learns nothing about the
+		// file — not even how many matrices it holds or what they are called.
+		spaces, err := s.ListSpaces()
+		if err != nil {
+			return nil, spacesOut{}, err
+		}
+		out := spacesOut{Spaces: make([]spaceOut, 0, len(spaces))}
+		for _, sp := range spaces {
+			// A server pinned to one space reports only that one.
+			if !withinPin(s, sp.Name) {
+				continue
+			}
+			out.Spaces = append(out.Spaces, spaceOut{
+				Name:     task.SanitizeDisplay(sp.Name),
+				Active:   sp.Active,
+				Archived: sp.Archived,
+				Current:  sp.Current,
+			})
+		}
+		return nil, out, nil
 	})
 
 	return srv

@@ -47,6 +47,15 @@ func newMCPCmd(open opener) *cobra.Command {
 				//nolint:staticcheck // ST1005: formatted for a human, not a caller.
 				return errors.New(mcpDisabledMsg)
 			}
+			// A --space flag scopes the whole server, so a name that is not
+			// there should fail now rather than on the agent's first tool
+			// call, where it would look like a broken tool rather than a
+			// mistyped launch command.
+			if s.Pinned() != "" {
+				if _, err := s.Load(); err != nil {
+					return err
+				}
+			}
 			// ForMCP re-checks the gate on every read and mutation, so
 			// `ike mcp disable` revokes this session even while it stays
 			// connected. The check above only covers startup.
@@ -114,6 +123,12 @@ func newMCPStatusCmd(open opener) *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "MCP access: %s\n", mcpState(enabled))
 			fmt.Fprintf(out, "data file:  %s\n", s.Path())
+			// The setting covers the file, so it covers every space in it.
+			// Saying which spaces those are makes the scope concrete rather
+			// than leaving "this matrix" to be guessed at.
+			if spaces, err := s.ListSpaces(); err == nil {
+				fmt.Fprintf(out, "spaces:     %s\n", spaceSummary(spaces))
+			}
 			fmt.Fprintf(out, "change it:  %s\n", hint)
 			return nil
 		}),

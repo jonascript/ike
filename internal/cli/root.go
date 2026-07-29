@@ -11,6 +11,11 @@ import (
 	"github.com/jonascript/ike/internal/tui"
 )
 
+// spaceFlag is the name of the --space flag. Subcommands can only reach a
+// persistent flag by name, so the name is a constant rather than a literal in
+// each place that looks it up.
+const spaceFlag = "space"
+
 // version is stamped at build time via -ldflags "-X ...cli.version=...".
 var version = "dev"
 
@@ -36,8 +41,35 @@ func withStore(open opener, run func(*cobra.Command, []string, *store.Store) err
 	}
 }
 
-// NewRootCmd builds the whole command tree against open.
-func NewRootCmd(open opener) *cobra.Command {
+// NewRootCmd builds the whole command tree against outer.
+func NewRootCmd(outer opener) *cobra.Command {
+	// space and file back the two persistent flags. They are scoped to this call
+	// rather than being package-level variables, so building a second tree —
+	// which every test does — cannot inherit a value from the first.
+	var space, file string
+
+	// openFile applies --file only. It stays lazy: the flag is read inside RunE,
+	// after cobra has parsed it, so `ike --help` still works with a broken path.
+	openFile := opener(func() (*store.Store, error) {
+		if file != "" {
+			// --file replaces the whole resolution, so a broken IKE_DATA_FILE
+			// must not stop you pointing at a working file.
+			return store.OpenPath("--file", file)
+		}
+		return outer()
+	})
+
+	// open adds --space, so no command has to know either flag exists.
+	// InSpace("") follows the file's current space, which is what an unflagged
+	// Store already does, so there is nothing to branch on.
+	open := opener(func() (*store.Store, error) {
+		s, err := openFile()
+		if err != nil {
+			return nil, err
+		}
+		return s.InSpace(space), nil
+	})
+
 	root := &cobra.Command{
 		Use:          "ike",
 		Short:        "ike — an Eisenhower matrix task manager",
@@ -48,6 +80,10 @@ func NewRootCmd(open opener) *cobra.Command {
 			return tui.Run(s)
 		}),
 	}
+	root.PersistentFlags().StringVarP(&space, spaceFlag, "s", "",
+		"act on this space instead of the current one")
+	root.PersistentFlags().StringVarP(&file, "file", "f", "",
+		"use this data file instead of IKE_DATA_FILE or the default location")
 	root.AddCommand(
 		newAddCmd(open),
 		newListCmd(open),
@@ -61,6 +97,10 @@ func NewRootCmd(open opener) *cobra.Command {
 		newLabelCmd(open),
 		newArchiveCmd(open),
 		newMCPCmd(open),
+		// The space commands name their target as an argument, so they take the
+		// opener without --space applied — but they still honor --file, since
+		// listing or importing into another document is exactly the point.
+		newSpaceCmd(openFile),
 	)
 	return root
 }
