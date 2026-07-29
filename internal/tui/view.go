@@ -47,9 +47,32 @@ func (m Model) View() tea.View {
 	return v
 }
 
+// tooSmallMessage explains that the terminal needs to be bigger, in a form that
+// fits the terminal it is complaining about. The single-line version is 37
+// characters, so at 30 columns it was cut to "terminal too small (30x8, need" —
+// losing the required size, which is the only actionable part of it.
+func tooSmallMessage(w, h int) string {
+	need := fmt.Sprintf("need %dx%d", minWidth, minHeight)
+
+	if long := fmt.Sprintf("terminal too small (%dx%d, %s)", w, h, need); len(long) <= w {
+		return long
+	}
+	// Two lines, because at this width one cannot carry both the current size
+	// and the required one. Needs a second row to put them on.
+	if short := fmt.Sprintf("too small: %dx%d", w, h); h >= 2 && len(short) <= w && len(need) <= w {
+		return short + "\n" + need
+	}
+	if len(need) <= w {
+		return need
+	}
+	// Below ten columns nothing informative fits, so keep the numbers that say
+	// how far there is to go.
+	return fmt.Sprintf("%dx%d", minWidth, minHeight)
+}
+
 func (m Model) render() string {
 	if m.width < minWidth || m.height < minHeight {
-		return fmt.Sprintf("terminal too small (%dx%d, need %dx%d)", m.width, m.height, minWidth, minHeight)
+		return tooSmallMessage(m.width, m.height)
 	}
 	if m.mode == modeArchive {
 		return m.renderArchive()
