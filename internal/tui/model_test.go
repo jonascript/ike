@@ -703,7 +703,7 @@ func TestInputPlaceholderDoesNotLeakBetweenModes(t *testing.T) {
 	}
 }
 
-// Cancelling an edit clears the task being edited, so the next add cannot be
+// Canceling an edit clears the task being edited, so the next add cannot be
 // mistaken for a rename of it.
 func TestCancelClearsEditingID(t *testing.T) {
 	m, s := testModel(t)
@@ -715,6 +715,6 @@ func TestCancelClearsEditingID(t *testing.T) {
 	m = press(t, m, "e")
 	m = press(t, m, "esc")
 	if m.editingID != 0 {
-		t.Errorf("editingID = %d, want 0 after cancelling", m.editingID)
+		t.Errorf("editingID = %d, want 0 after canceling", m.editingID)
 	}
 }

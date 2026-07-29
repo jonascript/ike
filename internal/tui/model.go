@@ -133,7 +133,7 @@ func (m *Model) refresh(d store.Data) {
 // apply takes the two results of a store mutation and re-renders from them,
 // reporting whether it succeeded.
 //
-// Callers use the bool to decide whether to set a success message. Signalling
+// Callers use the bool to decide whether to set a success message. Signaling
 // failure through m.status instead was the reason a failed complete, delete, or
 // move used to overwrite its own error with "done: …" and leave the row on
 // screen: there was nothing to check but the status text itself.
