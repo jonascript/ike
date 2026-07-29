@@ -36,14 +36,21 @@ var (
 	ErrNothingToRedo = errors.New("nothing to redo")
 )
 
+// Every mutating operation returns the post-mutation Data alongside its own
+// result. Mutate already produces it, so handing it back costs nothing and
+// spares callers a second read: the quadrant labels a frontend needs to render
+// the outcome, and the full state the TUI re-renders from, are both in there.
+// Reading them again would also be a read of a *later* file state, which may
+// no longer be the one the operation produced.
+
 // Add creates a new task at the bottom of the given quadrant and returns it.
-func (s *Store) Add(title string, q task.Quadrant) (task.Task, error) {
+func (s *Store) Add(title string, q task.Quadrant) (task.Task, Data, error) {
 	title = strings.TrimSpace(title)
 	if err := task.Validate(title, q); err != nil {
-		return task.Task{}, err
+		return task.Task{}, Data{}, err
 	}
 	var created task.Task
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		pushUndo(d, fmt.Sprintf("add %q", title))
 		created = task.Task{
 			ID:        d.NextID,
@@ -56,13 +63,13 @@ func (s *Store) Add(title string, q task.Quadrant) (task.Task, error) {
 		d.Tasks = append(d.Tasks, created)
 		return nil
 	})
-	return created, err
+	return created, d, err
 }
 
 // Complete moves a task to the archive, stamping DoneAt.
-func (s *Store) Complete(id int) (task.Task, error) {
+func (s *Store) Complete(id int) (task.Task, Data, error) {
 	var done task.Task
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		i, err := findTask(d, id)
 		if err != nil {
 			return err
@@ -75,15 +82,15 @@ func (s *Store) Complete(id int) (task.Task, error) {
 		d.Archive = append(d.Archive, done)
 		return nil
 	})
-	return done, err
+	return done, d, err
 }
 
 // Restore moves an archived task back into the active matrix, clearing its
 // completion stamp and placing it at the bottom of the quadrant it was
 // completed in.
-func (s *Store) Restore(id int) (task.Task, error) {
+func (s *Store) Restore(id int) (task.Task, Data, error) {
 	var restored task.Task
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		i, err := findArchived(d, id)
 		if err != nil {
 			return err
@@ -96,16 +103,16 @@ func (s *Store) Restore(id int) (task.Task, error) {
 		d.Tasks = append(d.Tasks, restored)
 		return nil
 	})
-	return restored, err
+	return restored, d, err
 }
 
 // Move changes a task's quadrant, placing it at the bottom of the destination.
-func (s *Store) Move(id int, q task.Quadrant) (task.Task, error) {
+func (s *Store) Move(id int, q task.Quadrant) (task.Task, Data, error) {
 	if !q.Valid() {
-		return task.Task{}, fmt.Errorf("quadrant must be 1-4, got %d", q)
+		return task.Task{}, Data{}, fmt.Errorf("quadrant must be 1-4, got %d", q)
 	}
 	var moved task.Task
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		i, err := findTask(d, id)
 		if err != nil {
 			return err
@@ -120,15 +127,15 @@ func (s *Store) Move(id int, q task.Quadrant) (task.Task, error) {
 		moved = d.Tasks[i]
 		return nil
 	})
-	return moved, err
+	return moved, d, err
 }
 
 // Reorder moves a task within its quadrant by delta positions — negative is
 // toward the top, positive toward the bottom — clamped at either end. It
 // rewrites the whole quadrant's ranks, so repeated moves never lose precision.
-func (s *Store) Reorder(id int, delta int) (task.Task, error) {
+func (s *Store) Reorder(id int, delta int) (task.Task, Data, error) {
 	var moved task.Task
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		i, err := findTask(d, id)
 		if err != nil {
 			return err
@@ -151,22 +158,22 @@ func (s *Store) Reorder(id int, delta int) (task.Task, error) {
 		moved = d.Tasks[i]
 		return nil
 	})
-	return moved, err
+	return moved, d, err
 }
 
 // SetQuadrantLabel renames a quadrant's heading. A blank label clears the
 // override, restoring the built-in default. It returns the resulting display
 // name.
-func (s *Store) SetQuadrantLabel(q task.Quadrant, label string) (string, error) {
+func (s *Store) SetQuadrantLabel(q task.Quadrant, label string) (string, Data, error) {
 	if !q.Valid() {
-		return "", fmt.Errorf("quadrant must be 1-4, got %d", q)
+		return "", Data{}, fmt.Errorf("quadrant must be 1-4, got %d", q)
 	}
 	label = strings.TrimSpace(label)
 	if err := task.ValidateLabel(label); err != nil {
-		return "", err
+		return "", Data{}, err
 	}
 	var result string
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		was := d.Labels.Of(q)
 		if label == was {
 			result = was
@@ -185,7 +192,7 @@ func (s *Store) SetQuadrantLabel(q task.Quadrant, label string) (string, error) 
 		result = d.Labels.Of(q)
 		return nil
 	})
-	return result, err
+	return result, d, err
 }
 
 // QuadrantLabels returns the display names of all four quadrants, custom where
@@ -195,11 +202,18 @@ func (s *Store) QuadrantLabels() (Labels, error) {
 	if err != nil {
 		return nil, err
 	}
+	return d.QuadrantLabels(), nil
+}
+
+// QuadrantLabels returns the display names of all four quadrants, custom where
+// set and default otherwise. It is the pure form of Store.QuadrantLabels, for
+// callers that already hold the data — every mutation hands theirs back.
+func (d Data) QuadrantLabels() Labels {
 	out := make(Labels, 4)
 	for q := task.Do; q <= task.Eliminate; q++ {
 		out[q] = d.Labels.Of(q)
 	}
-	return out, nil
+	return out
 }
 
 // SetMCPEnabled turns agent access to this matrix on or off, and reports
@@ -207,6 +221,9 @@ func (s *Store) QuadrantLabels() (Labels, error) {
 //
 // This is a permission, not an edit: it is deliberately kept off the undo
 // stack, so no sequence of undo or redo can re-open access the owner closed.
+// It also does not return Data the way the task operations do — nothing
+// renders a result from it, and handing an MCP-gated caller a full copy of the
+// matrix from the call that flips the gate would be a poor shape.
 func (s *Store) SetMCPEnabled(on bool) (changed bool, err error) {
 	_, err = s.Mutate(func(d *Data) error {
 		changed = d.MCPEnabled != on
@@ -226,10 +243,10 @@ func (s *Store) MCPEnabled() (bool, error) {
 }
 
 // Rename changes a task's title.
-func (s *Store) Rename(id int, title string) (task.Task, error) {
+func (s *Store) Rename(id int, title string) (task.Task, Data, error) {
 	title = strings.TrimSpace(title)
 	var renamed task.Task
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		i, err := findTask(d, id)
 		if err != nil {
 			return err
@@ -242,14 +259,14 @@ func (s *Store) Rename(id int, title string) (task.Task, error) {
 		renamed = d.Tasks[i]
 		return nil
 	})
-	return renamed, err
+	return renamed, d, err
 }
 
 // Delete removes an active task permanently (it does not go to the archive).
 // It is still undoable until it falls off the undo stack.
-func (s *Store) Delete(id int) (task.Task, error) {
+func (s *Store) Delete(id int) (task.Task, Data, error) {
 	var deleted task.Task
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		i, err := findTask(d, id)
 		if err != nil {
 			return err
@@ -259,16 +276,16 @@ func (s *Store) Delete(id int) (task.Task, error) {
 		d.Tasks = append(d.Tasks[:i], d.Tasks[i+1:]...)
 		return nil
 	})
-	return deleted, err
+	return deleted, d, err
 }
 
 // Undo reverts the most recent recorded mutation and returns its label. It
 // restores both task lists but deliberately leaves next_id alone: IDs stay
 // monotonic and are never reused, so undoing an add does not free its ID.
 // The undone state moves to the redo stack, so Redo puts it back.
-func (s *Store) Undo() (string, error) {
+func (s *Store) Undo() (string, Data, error) {
 	var label string
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		if len(d.Undo) == 0 {
 			return ErrNothingToUndo
 		}
@@ -280,15 +297,15 @@ func (s *Store) Undo() (string, error) {
 		label = snap.Label
 		return nil
 	})
-	return label, err
+	return label, d, err
 }
 
 // Redo re-applies the most recently undone change and returns its label. It
 // is available only until the next real mutation, which discards the redo
 // stack. A redo is itself undoable.
-func (s *Store) Redo() (string, error) {
+func (s *Store) Redo() (string, Data, error) {
 	var label string
-	_, err := s.Mutate(func(d *Data) error {
+	d, err := s.Mutate(func(d *Data) error {
 		if len(d.Redo) == 0 {
 			return ErrNothingToRedo
 		}
@@ -301,7 +318,7 @@ func (s *Store) Redo() (string, error) {
 		label = snap.Label
 		return nil
 	})
-	return label, err
+	return label, d, err
 }
 
 // UndoLabel reports what the next Undo would revert, or "" if the stack is
@@ -411,6 +428,13 @@ func (s *Store) List(q task.Quadrant) ([]task.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	return d.List(q), nil
+}
+
+// List returns d's active tasks, optionally filtered to one quadrant (q == 0
+// means all), in display order. It is the single definition of that list, used
+// by Store.List and rendered directly by the TUI from the data it already has.
+func (d Data) List(q task.Quadrant) []task.Task {
 	tasks := make([]task.Task, 0, len(d.Tasks))
 	for _, t := range d.Tasks {
 		if q == 0 || t.Quadrant == q {
@@ -418,7 +442,7 @@ func (s *Store) List(q task.Quadrant) ([]task.Task, error) {
 		}
 	}
 	task.SortOrder(tasks)
-	return tasks, nil
+	return tasks
 }
 
 // ListArchive returns archived tasks, newest completion first.
@@ -427,6 +451,17 @@ func (s *Store) ListArchive() ([]task.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	return d.ListArchive(), nil
+}
+
+// ListArchive returns d's archived tasks, newest completion first. It is the
+// single definition of archive order: `ike archive` and the TUI's archive view
+// both render this, so they cannot drift apart. Tasks with no completion stamp
+// — reachable from a hand-edited or pre-archive data file — sort by ID, which
+// is why this is not just a reversal of the stored slice.
+func (d Data) ListArchive() []task.Task {
+	// Not slices.Clone: it preserves nil, and `ike archive --json` must emit []
+	// rather than null for an empty archive.
 	arch := make([]task.Task, len(d.Archive))
 	copy(arch, d.Archive)
 	sort.SliceStable(arch, func(i, j int) bool {
@@ -436,7 +471,7 @@ func (s *Store) ListArchive() ([]task.Task, error) {
 		}
 		return arch[i].ID > arch[j].ID
 	})
-	return arch, nil
+	return arch
 }
 
 func findTask(d *Data, id int) (int, error) {

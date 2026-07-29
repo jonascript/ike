@@ -140,7 +140,7 @@ func (m Model) renderQuadrant(q task.Quadrant, w, h int) string {
 }
 
 func (m Model) renderTaskLines(q task.Quadrant, w, visible int, focused bool) []string {
-	tasks := m.tasksIn(q)
+	tasks := m.data.List(q)
 	if len(tasks) == 0 {
 		return []string{lipgloss.NewStyle().Foreground(m.dimColor()).Italic(true).Render("empty")}
 	}
@@ -259,7 +259,7 @@ func (m Model) renderArchive() string {
 	title := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("Archive — %d completed", len(m.data.Archive)))
 
 	// Newest completion first, matching `ike archive`.
-	arch := m.archiveList()
+	arch := m.data.ListArchive()
 
 	visible := m.height - 4 // title + blank + status + footer
 	offset := 0
@@ -273,11 +273,7 @@ func (m Model) renderArchive() string {
 	}
 	for i := offset; i < len(arch) && i-offset < visible; i++ {
 		t := arch[i]
-		when := ""
-		if t.DoneAt != nil {
-			when = t.DoneAt.Local().Format("2006-01-02")
-		}
-		line := fmt.Sprintf("  %3d  %s  %s", t.ID, when, ansi.Truncate(t.DisplayTitle(), max(m.width-20, 4), "…"))
+		line := t.ArchiveRow(ansi.Truncate(t.DisplayTitle(), max(m.width-20, 4), "…"))
 		if i == m.archCursor {
 			line = lipgloss.NewStyle().Bold(true).Render("▸" + line[1:])
 		}

@@ -18,7 +18,7 @@ func TestDataFileAndDirArePrivate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ike")
 	path := filepath.Join(dir, "tasks.json")
 	s := OpenAt(path)
-	if _, err := s.Add("private", task.Do); err != nil {
+	if _, _, err := s.Add("private", task.Do); err != nil {
 		t.Fatal(err)
 	}
 
@@ -45,14 +45,14 @@ func TestWriteTightensPermissionsOfAnOlderFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tasks.json")
 	s := OpenAt(path)
-	if _, err := s.Add("first", task.Do); err != nil {
+	if _, _, err := s.Add("first", task.Do); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := s.Add("second", task.Do); err != nil {
+	if _, _, err := s.Add("second", task.Do); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(path)
@@ -79,7 +79,7 @@ func TestWriteDoesNotUsePredictableTempName(t *testing.T) {
 	}
 
 	s := OpenAt(path)
-	if _, err := s.Add("safe", task.Do); err != nil {
+	if _, _, err := s.Add("safe", task.Do); err != nil {
 		t.Fatal(err)
 	}
 
@@ -108,7 +108,7 @@ func TestWriteKeepsABackupOfThePreviousContents(t *testing.T) {
 	path := filepath.Join(dir, "tasks.json")
 	s := OpenAt(path)
 
-	if _, err := s.Add("first", task.Do); err != nil {
+	if _, _, err := s.Add("first", task.Do); err != nil {
 		t.Fatal(err)
 	}
 	// No backup yet: there was nothing to preserve before the first write.
@@ -116,7 +116,7 @@ func TestWriteKeepsABackupOfThePreviousContents(t *testing.T) {
 		t.Errorf("unexpected backup after the first write: %v", err)
 	}
 
-	if _, err := s.Add("second", task.Do); err != nil {
+	if _, _, err := s.Add("second", task.Do); err != nil {
 		t.Fatal(err)
 	}
 	bak, err := os.ReadFile(path + ".bak")
@@ -147,7 +147,7 @@ func TestWrittenFileIsCompleteAndParses(t *testing.T) {
 	path := filepath.Join(dir, "tasks.json")
 	s := OpenAt(path)
 	for i := range 25 {
-		if _, err := s.Add(strings.Repeat("x", i+1), task.Schedule); err != nil {
+		if _, _, err := s.Add(strings.Repeat("x", i+1), task.Schedule); err != nil {
 			t.Fatal(err)
 		}
 		d, err := s.Load()
@@ -204,7 +204,7 @@ func TestMutateTimesOutInsteadOfHangingForever(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tasks.json")
 	s := OpenAt(path)
-	if _, err := s.Add("seed", task.Do); err != nil {
+	if _, _, err := s.Add("seed", task.Do); err != nil {
 		t.Fatal(err)
 	}
 
@@ -216,7 +216,7 @@ func TestMutateTimesOutInsteadOfHangingForever(t *testing.T) {
 	defer func() { _ = held.Unlock() }()
 
 	start := time.Now()
-	_, err := s.Add("blocked", task.Do)
+	_, _, err := s.Add("blocked", task.Do)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -237,7 +237,7 @@ func TestMutateTimesOutInsteadOfHangingForever(t *testing.T) {
 	if err := held.Unlock(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Add("after release", task.Do); err != nil {
+	if _, _, err := s.Add("after release", task.Do); err != nil {
 		t.Errorf("Add after the lock was released: %v", err)
 	}
 }

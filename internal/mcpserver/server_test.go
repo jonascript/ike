@@ -237,7 +237,7 @@ func TestRedoInvalidatedByAnotherFrontend(t *testing.T) {
 	call(t, sess, "undo", map[string]any{})
 
 	// A write straight to the store, as the CLI or TUI would make.
-	if _, err := s.Add("from another frontend", task.Schedule); err != nil {
+	if _, _, err := s.Add("from another frontend", task.Schedule); err != nil {
 		t.Fatal(err)
 	}
 	if res := call(t, sess, "redo", map[string]any{}); !res.IsError {

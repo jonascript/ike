@@ -93,7 +93,7 @@ func TestAddTaskFlow(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].Title != "plan roadmap" {
 		t.Errorf("store tasks = %+v, want the added task in Schedule", tasks)
 	}
-	if got := m.tasksIn(task.Schedule); len(got) != 1 {
+	if got := m.data.List(task.Schedule); len(got) != 1 {
 		t.Errorf("model shows %d tasks in Schedule, want 1", len(got))
 	}
 }
@@ -162,7 +162,7 @@ func TestRenameQuadrant(t *testing.T) {
 
 func TestRenameQuadrantToBlankRestoresDefault(t *testing.T) {
 	m, s := testModel(t)
-	if _, err := s.SetQuadrantLabel(task.Do, "Firefighting"); err != nil {
+	if _, _, err := s.SetQuadrantLabel(task.Do, "Firefighting"); err != nil {
 		t.Fatal(err)
 	}
 	m.refreshFromStore(t)
@@ -226,7 +226,7 @@ func TestAddStillWorksAfterRenaming(t *testing.T) {
 
 func TestQuadrantHeadersAreJustNames(t *testing.T) {
 	m, s := testModel(t)
-	if _, err := s.SetQuadrantLabel(task.Do, "Firefighting"); err != nil {
+	if _, _, err := s.SetQuadrantLabel(task.Do, "Firefighting"); err != nil {
 		t.Fatal(err)
 	}
 	m.refreshFromStore(t)
@@ -374,7 +374,7 @@ func TestUndoKey(t *testing.T) {
 	if !strings.Contains(m.status, "undid") {
 		t.Errorf("status = %q, want it to mention the undo", m.status)
 	}
-	if len(m.tasksIn(task.Do)) != 1 {
+	if len(m.data.List(task.Do)) != 1 {
 		t.Error("model did not re-render the restored task")
 	}
 }
@@ -542,7 +542,7 @@ func TestRefreshPicksUpExternalChanges(t *testing.T) {
 	s.Add("from elsewhere", task.Do)
 	next, _ := m.Update(tickMsg{})
 	m = next.(Model)
-	if len(m.tasksIn(task.Do)) != 1 {
+	if len(m.data.List(task.Do)) != 1 {
 		t.Error("tick did not reload externally-added task")
 	}
 }
@@ -591,7 +591,7 @@ func (m *Model) refreshFromStore(t *testing.T) {
 // the screen quietly disagreed with the file.
 func TestRefreshTickSurfacesAReadError(t *testing.T) {
 	m, s := testModel(t)
-	if _, err := s.Add("real task", task.Do); err != nil {
+	if _, _, err := s.Add("real task", task.Do); err != nil {
 		t.Fatal(err)
 	}
 	m.refreshFromStore(t)
@@ -630,5 +630,91 @@ func TestRefreshTickSurfacesAReadError(t *testing.T) {
 	}
 	if got := m.render(); strings.Contains(got, "cannot re-read") {
 		t.Errorf("stale error still shown after recovery:\n%s", got)
+	}
+}
+
+// corrupt makes the next store operation fail, so the tests below can check
+// what the TUI does with a mutation that did not happen.
+func corrupt(t *testing.T, s *store.Store) {
+	t.Helper()
+	if err := os.WriteFile(s.Path(), []byte("{ not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A mutation that fails must not report success. These three used to set their
+// status message unconditionally, overwriting the error that mutate had just
+// written into it — so a failed complete said "done: …" while the task stayed
+// on screen. apply's bool return is what makes the success message conditional.
+func TestFailedMutationsDoNotReportSuccess(t *testing.T) {
+	cases := []struct {
+		name    string
+		keys    []string
+		wrongly string
+	}{
+		{"complete", []string{"x"}, "done:"},
+		{"delete", []string{"d", "d"}, "deleted:"},
+		{"move", []string{"m", "2"}, "moved to"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, s := testModel(t)
+			if _, _, err := s.Add("ship v2", task.Do); err != nil {
+				t.Fatal(err)
+			}
+			m.refreshFromStore(t)
+			corrupt(t, s)
+
+			m = press(t, m, c.keys...)
+
+			if strings.Contains(m.status, c.wrongly) {
+				t.Errorf("failed %s reported success: %q", c.name, m.status)
+			}
+			if m.status == "" {
+				t.Errorf("failed %s left no error in the status line", c.name)
+			}
+			// The matrix on screen still shows the task, because nothing changed.
+			if got := len(m.data.List(task.Do)); got != 1 {
+				t.Errorf("task count = %d, want 1 — a failed mutation must not alter the view", got)
+			}
+		})
+	}
+}
+
+// Entering input mode sets every piece of input state together. Setting them
+// one field at a time let the quadrant-rename placeholder survive into the next
+// task edit, where it read "quadrant name (empty resets to the default)".
+func TestInputPlaceholderDoesNotLeakBetweenModes(t *testing.T) {
+	m, s := testModel(t)
+	if _, _, err := s.Add("ship v2", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+
+	m = press(t, m, "t")   // rename the quadrant
+	m = press(t, m, "esc") // cancel
+	m = press(t, m, "e")   // now edit a task title
+
+	if strings.Contains(m.input.Placeholder, "quadrant") {
+		t.Errorf("quadrant placeholder leaked into the task edit: %q", m.input.Placeholder)
+	}
+	if m.labelTarget != 0 {
+		t.Errorf("labelTarget = %d, want 0 while editing a task", m.labelTarget)
+	}
+}
+
+// Cancelling an edit clears the task being edited, so the next add cannot be
+// mistaken for a rename of it.
+func TestCancelClearsEditingID(t *testing.T) {
+	m, s := testModel(t)
+	if _, _, err := s.Add("ship v2", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+
+	m = press(t, m, "e")
+	m = press(t, m, "esc")
+	if m.editingID != 0 {
+		t.Errorf("editingID = %d, want 0 after cancelling", m.editingID)
 	}
 }

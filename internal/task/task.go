@@ -118,6 +118,22 @@ type Task struct {
 // encoding/json escapes control characters itself.
 func (t Task) DisplayTitle() string { return SanitizeDisplay(t.Title) }
 
+// ArchiveDate is the local completion date, or "" for a task carrying no
+// completion stamp — reachable from a hand-edited or pre-archive data file.
+func (t Task) ArchiveDate() string {
+	if t.DoneAt == nil {
+		return ""
+	}
+	return t.DoneAt.Local().Format(time.DateOnly)
+}
+
+// ArchiveRow formats one line of an archive listing. `ike archive` and the
+// TUI's archive view both render through it, so the two cannot drift apart;
+// title is passed in because only the TUI truncates it to the pane width.
+func (t Task) ArchiveRow(title string) string {
+	return fmt.Sprintf("  %3d  %s  %s", t.ID, t.ArchiveDate(), title)
+}
+
 // Less reports whether a sorts before b in display order: by quadrant, then
 // by rank within the quadrant, then by ID. Rank is assigned by the store; a
 // zero rank means "not ranked yet" and falls back to ID order.
