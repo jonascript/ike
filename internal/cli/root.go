@@ -38,17 +38,27 @@ func withStore(open opener, run func(*cobra.Command, []string, *store.Store) err
 
 // NewRootCmd builds the whole command tree against outer.
 func NewRootCmd(outer opener) *cobra.Command {
-	// space backs the --space flag. It is scoped to this call rather than being
-	// a package-level variable, so building a second tree — which every test
-	// does — cannot inherit a value from the first.
-	var space string
+	// space and file back the two persistent flags. They are scoped to this call
+	// rather than being package-level variables, so building a second tree —
+	// which every test does — cannot inherit a value from the first.
+	var space, file string
 
-	// Commands receive an opener that applies the flag, so none of them has to
-	// know the flag exists. InSpace("") follows the file's current space, which
-	// is what an unflagged Store already does, so there is nothing to branch on.
-	// It stays lazy: the flag is read inside RunE, after cobra has parsed it.
+	// openFile applies --file only. It stays lazy: the flag is read inside RunE,
+	// after cobra has parsed it, so `ike --help` still works with a broken path.
+	openFile := opener(func() (*store.Store, error) {
+		if file != "" {
+			// --file replaces the whole resolution, so a broken IKE_DATA_FILE
+			// must not stop you pointing at a working file.
+			return store.OpenPath("--file", file)
+		}
+		return outer()
+	})
+
+	// open adds --space, so no command has to know either flag exists.
+	// InSpace("") follows the file's current space, which is what an unflagged
+	// Store already does, so there is nothing to branch on.
 	open := opener(func() (*store.Store, error) {
-		s, err := outer()
+		s, err := openFile()
 		if err != nil {
 			return nil, err
 		}
@@ -67,6 +77,8 @@ func NewRootCmd(outer opener) *cobra.Command {
 	}
 	root.PersistentFlags().StringVarP(&space, "space", "s", "",
 		"act on this space instead of the current one")
+	root.PersistentFlags().StringVarP(&file, "file", "f", "",
+		"use this data file instead of IKE_DATA_FILE or the default location")
 	root.AddCommand(
 		newAddCmd(open),
 		newListCmd(open),
@@ -80,9 +92,10 @@ func NewRootCmd(outer opener) *cobra.Command {
 		newLabelCmd(open),
 		newArchiveCmd(open),
 		newMCPCmd(open),
-		// The space commands act on the document, so they take the store as it
-		// was opened, without the --space flag applied.
-		newSpaceCmd(outer),
+		// The space commands name their target as an argument, so they take the
+		// opener without --space applied — but they still honor --file, since
+		// listing or importing into another document is exactly the point.
+		newSpaceCmd(openFile),
 	)
 	return root
 }

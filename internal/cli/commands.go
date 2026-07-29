@@ -34,7 +34,7 @@ func parseQuadrant(s string) (task.Quadrant, error) {
 // just chose and does not need repeating. With it, the write went somewhere
 // other than where a bare `ike list` looks, and saying so is the difference
 // between capturing a task and losing track of it. Silent either way was the
-// alternative, and it makes `ike -s wrok done 3` indistinguishable from the
+// alternative, and it makes `ike -s mistyped done 3` indistinguishable from the
 // command you meant.
 func inSpace(cmd *cobra.Command, d store.Data) string {
 	if f := cmd.Flags().Lookup("space"); f == nil || !f.Changed {

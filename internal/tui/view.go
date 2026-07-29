@@ -57,6 +57,9 @@ func (m Model) render() string {
 	if m.mode == modeSpaces {
 		return m.renderSpaces()
 	}
+	if m.mode == modeFiles {
+		return m.renderFiles()
+	}
 
 	footer := m.renderFooter()
 	footerH := lipgloss.Height(footer)
@@ -149,6 +152,39 @@ func (m Model) renderSpaces() string {
 	lines = append(lines,
 		ansi.Truncate(m.status, m.width, "…"),
 		dim.Render("enter switch · n new · r rename · d twice delete · j/k select · s/esc/q back"),
+	)
+	return strings.Join(lines, "\n")
+}
+
+// renderFiles is the data file picker: the files opened before, and a way to
+// type a path that is not among them.
+func (m Model) renderFiles() string {
+	dim := lipgloss.NewStyle().Foreground(m.dimColor())
+	title := lipgloss.NewStyle().Bold(true).Render("Data files")
+
+	visible := m.height - 5 // title + blank + current + status + footer
+	offset := 0
+	if m.fileCursor >= visible {
+		offset = m.fileCursor - visible + 1
+	}
+
+	lines := []string{title, "", dim.Render("current: " + m.store.Path()), ""}
+	if len(m.recent) == 0 {
+		lines = append(lines, dim.Italic(true).Render("no other files opened yet — press o to type a path"))
+	}
+	for i := offset; i < len(m.recent) && i-offset < visible; i++ {
+		row := "    " + m.recent[i]
+		if m.recent[i] == m.store.Path() {
+			row = "  • " + m.recent[i]
+		}
+		if i == m.fileCursor {
+			row = lipgloss.NewStyle().Bold(true).Render("▸" + row[1:])
+		}
+		lines = append(lines, ansi.Truncate(row, m.width, "…"))
+	}
+	lines = append(lines,
+		ansi.Truncate(m.status, m.width, "…"),
+		dim.Render("enter open · o type a path · j/k select · f/esc/q back"),
 	)
 	return strings.Join(lines, "\n")
 }
@@ -260,6 +296,8 @@ func (m Model) renderFooter() string {
 			verb = "new space"
 		case inputRenameSpace:
 			verb = fmt.Sprintf("rename space %s", task.SanitizeDisplay(m.spaceTarget))
+		case inputOpenFile:
+			verb = "open data file"
 		}
 		status = fmt.Sprintf("%s: %s", verb, m.input.View())
 	default:
@@ -290,6 +328,7 @@ func (m Model) renderFooter() string {
 			"s spaces: switch matrix, or n/r/dd to add, rename, delete · ]/[ next/prev space",
 			"each space keeps its own tasks, headings, and history",
 			"space changes are not undoable, unlike changes to tasks",
+			"f data files: switch to another matrix file, or o to type a path",
 			m.mcpHelpLine(),
 		}, "\n")
 	}

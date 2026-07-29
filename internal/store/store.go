@@ -211,6 +211,16 @@ func OpenAt(path string) *Store {
 	return &Store{path: path, lockPath: path + ".lock"}
 }
 
+// OpenPath returns a Store at a user-supplied path, validated the same way an
+// IKE_DATA_FILE override is. It backs `ike --file`.
+func OpenPath(source, path string) (*Store, error) {
+	p, err := CheckPath(source, path)
+	if err != nil {
+		return nil, err
+	}
+	return OpenAt(p), nil
+}
+
 // Path returns the data file path.
 func (s *Store) Path() string { return s.path }
 

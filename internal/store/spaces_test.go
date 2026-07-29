@@ -164,10 +164,10 @@ func TestMutateNeverCreatesASpace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := s.InSpace("wrok").Add("typo", task.Do); err == nil {
+	if _, _, err := s.InSpace("mistyped").Add("typo", task.Do); err == nil {
 		t.Fatal("adding to a nonexistent space should error")
 	}
-	if _, err := s.InSpace("wrok").Load(); err == nil {
+	if _, err := s.InSpace("mistyped").Load(); err == nil {
 		t.Error("loading a nonexistent space should error")
 	}
 

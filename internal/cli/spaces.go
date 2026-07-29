@@ -36,7 +36,71 @@ func newSpaceCmd(open opener) *cobra.Command {
 		newSpaceUseCmd(open),
 		newSpaceRenameCmd(open),
 		newSpaceRmCmd(open),
+		newSpaceExportCmd(open),
+		newSpaceImportCmd(open),
 	)
+	return cmd
+}
+
+func newSpaceExportCmd(open opener) *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "export <name> <path>",
+		Short: "Write a space to a standalone data file",
+		Long: "Write one space to its own ike data file. The result is a normal data\n" +
+			"file: open it directly with --file, or pull it into another one with\n" +
+			"`ike space import`. This is how you move a matrix to another machine —\n" +
+			"export, copy the one file, import.\n\n" +
+			"MCP access is always off in the exported file, whatever it is here:\n" +
+			"agent access is a decision about a file on a machine, and an export is\n" +
+			"made to travel.",
+		Args: cobra.ExactArgs(2),
+		RunE: withStore(open, func(cmd *cobra.Command, args []string, s *store.Store) error {
+			if err := rejectSpaceFlag(cmd); err != nil {
+				return err
+			}
+			info, err := s.ExportSpace(args[0], args[1], force)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "exported space %s (%s) to %s\n",
+				task.SanitizeDisplay(info.Name), spaceCounts(info), args[1])
+			return nil
+		}),
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite the destination if it already exists")
+	return cmd
+}
+
+func newSpaceImportCmd(open opener) *cobra.Command {
+	var as string
+	var all bool
+	cmd := &cobra.Command{
+		Use:   "import <path>",
+		Short: "Copy spaces in from another data file",
+		Long: "Copy a space out of another ike data file into this one. By default it\n" +
+			"takes that file's current space; --all takes every space in it.\n\n" +
+			"A name already in use is an error rather than a merge: combining two\n" +
+			"matrices would have to reconcile two ID sequences and two histories.\n" +
+			"Use --as to bring a space in under a different name.",
+		Args: cobra.ExactArgs(1),
+		RunE: withStore(open, func(cmd *cobra.Command, args []string, s *store.Store) error {
+			if err := rejectSpaceFlag(cmd); err != nil {
+				return err
+			}
+			imported, err := s.ImportSpaces(args[0], as, all)
+			if err != nil {
+				return err
+			}
+			for _, info := range imported {
+				fmt.Fprintf(cmd.OutOrStdout(), "imported space %s (%s)\n",
+					task.SanitizeDisplay(info.Name), spaceCounts(info))
+			}
+			return nil
+		}),
+	}
+	cmd.Flags().StringVar(&as, "as", "", "import the space under this name instead")
+	cmd.Flags().BoolVar(&all, "all", false, "import every space in the file, not just its current one")
 	return cmd
 }
 

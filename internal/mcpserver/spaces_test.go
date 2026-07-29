@@ -182,11 +182,11 @@ func TestUnknownSpaceIsAToolErrorAndCreatesNothing(t *testing.T) {
 		tool string
 		args map[string]any
 	}{
-		{"list_tasks", map[string]any{"space": "wrok"}},
-		{"add_task", map[string]any{"title": "x", "quadrant": 1, "space": "wrok"}},
-		{"complete_task", map[string]any{"id": 1, "space": "wrok"}},
-		{"undo", map[string]any{"space": "wrok"}},
-		{"set_quadrant_label", map[string]any{"quadrant": 1, "label": "x", "space": "wrok"}},
+		{"list_tasks", map[string]any{"space": "mistyped"}},
+		{"add_task", map[string]any{"title": "x", "quadrant": 1, "space": "mistyped"}},
+		{"complete_task", map[string]any{"id": 1, "space": "mistyped"}},
+		{"undo", map[string]any{"space": "mistyped"}},
+		{"set_quadrant_label", map[string]any{"quadrant": 1, "label": "x", "space": "mistyped"}},
 	} {
 		// A domain error must arrive as a tool error, not a protocol error —
 		// call() fails the test on the latter.

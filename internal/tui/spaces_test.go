@@ -408,3 +408,99 @@ func TestSpacePromptStateDoesNotLeak(t *testing.T) {
 		t.Errorf("prompt is not the add prompt:\n%s", m.render())
 	}
 }
+
+func TestFilePickerListsRecentFiles(t *testing.T) {
+	m, s := spacesModel(t)
+	// A second file, opened once so it is remembered.
+	other := filepath.Join(t.TempDir(), "other.json")
+	o := store.OpenAt(other)
+	if _, _, err := o.Add("other file task", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(o); err != nil {
+		t.Fatal(err)
+	}
+	m.recent = store.LoadRecent().Paths
+
+	m = press(t, m, "f")
+	if m.mode != modeFiles {
+		t.Fatalf("mode = %v, want the file picker", m.mode)
+	}
+	out := m.render()
+	if !strings.Contains(out, "Data files") || !strings.Contains(out, s.Path()) {
+		t.Errorf("picker does not show the files:\n%s", out)
+	}
+	if m := press(t, m, "esc"); m.mode != modeNormal {
+		t.Errorf("mode after esc = %v, want normal", m.mode)
+	}
+}
+
+func TestFilePickerOpensATypedPath(t *testing.T) {
+	m, _ := spacesModel(t)
+	other := filepath.Join(t.TempDir(), "other.json")
+	if _, _, err := store.OpenAt(other).Add("other file task", task.Do); err != nil {
+		t.Fatal(err)
+	}
+
+	m = press(t, m, "f", "o")
+	if m.purpose != inputOpenFile {
+		t.Fatalf("purpose = %v, want the open-file prompt", m.purpose)
+	}
+	m.input.SetValue(other)
+	m = press(t, m, "enter")
+
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want the matrix", m.mode)
+	}
+	if m.store.Path() != other {
+		t.Errorf("path = %q, want %q", m.store.Path(), other)
+	}
+	if !strings.Contains(m.render(), "other file task") {
+		t.Errorf("the new file's tasks are not shown:\n%s", m.render())
+	}
+	// And the next mutation lands in the newly opened file.
+	m = press(t, m, "x")
+	d, err := store.OpenAt(other).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Tasks) != 0 || len(d.Archive) != 1 {
+		t.Errorf("other file = %d active / %d archived, want the completion here",
+			len(d.Tasks), len(d.Archive))
+	}
+}
+
+// A path that cannot be opened must not cost the session already in progress.
+func TestOpeningABadPathKeepsTheCurrentFile(t *testing.T) {
+	m, s := spacesModel(t)
+	before := m.store.Path()
+
+	for _, bad := range []string{"relative.json", "~/tasks.json", filepath.Join(t.TempDir(), "nope", "t.json")} {
+		m = press(t, m, "f", "o")
+		m.input.SetValue(bad)
+		m = press(t, m, "enter")
+
+		if m.store.Path() != before {
+			t.Fatalf("path = %q, want the original file kept after %q", m.store.Path(), bad)
+		}
+		if m.status == "" {
+			t.Errorf("opening %q reported nothing", bad)
+		}
+		if !strings.Contains(m.render(), "home task") {
+			t.Errorf("the original matrix is no longer rendered after %q", bad)
+		}
+	}
+	// The store is still usable.
+	m = press(t, m, "x")
+	if got := activeTitles(t, s, "default"); len(got) != 0 {
+		t.Errorf("tasks = %v, want the original store still working", got)
+	}
+}
+
+func TestHelpMentionsFiles(t *testing.T) {
+	m, _ := spacesModel(t)
+	m = press(t, m, "?")
+	if !strings.Contains(m.render(), "f data files") {
+		t.Errorf("help lacks the file key:\n%s", m.render())
+	}
+}

@@ -33,6 +33,10 @@ type keyMap struct {
 	PrevSpace   key.Binding
 	NewSpace    key.Binding
 	RenameSpace key.Binding
+
+	// File keys. OpenFile is live only inside the file picker.
+	Files    key.Binding
+	OpenFile key.Binding
 }
 
 var keys = keyMap{
@@ -63,4 +67,7 @@ var keys = keyMap{
 	PrevSpace:   key.NewBinding(key.WithKeys("["), key.WithHelp("[", "prev space")),
 	NewSpace:    key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new space")),
 	RenameSpace: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "rename space")),
+
+	Files:    key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "files")),
+	OpenFile: key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open a path")),
 }

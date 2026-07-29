@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -153,9 +154,9 @@ func TestSpaceFlagWithUnknownNameFailsAndWritesNothing(t *testing.T) {
 	}
 
 	for _, args := range [][]string{
-		{"-s", "wrok", "add", "typo"},
-		{"-s", "wrok", "list"},
-		{"-s", "wrok", "done", "1"},
+		{"-s", "mistyped", "add", "typo"},
+		{"-s", "mistyped", "list"},
+		{"-s", "mistyped", "done", "1"},
 	} {
 		if _, err := runCLI(t, p, args...); err == nil {
 			t.Errorf("ike %s should fail against a nonexistent space", strings.Join(args, " "))
@@ -251,5 +252,107 @@ func TestMCPEnableWorksWithASpaceFlag(t *testing.T) {
 	}
 	if out := mustRunCLI(t, p, "mcp", "status"); !strings.Contains(out, "MCP access: on") {
 		t.Errorf("status from the current space = %q, want the same answer", out)
+	}
+}
+
+func TestFileFlagSelectsAnotherDataFile(t *testing.T) {
+	a, b := scratch(t), scratch(t)
+	mustRunCLI(t, a, "add", "in file a")
+	mustRunCLI(t, b, "add", "in file b")
+
+	// --file wins over whatever the opener resolved to.
+	out := mustRunCLI(t, a, "--file", b, "list")
+	if !strings.Contains(out, "in file b") || strings.Contains(out, "in file a") {
+		t.Errorf("list --file = %q, want only the other file's task", out)
+	}
+	// And it composes with --space.
+	mustRunCLI(t, b, "space", "new", "work")
+	mustRunCLI(t, a, "--file", b, "-s", "work", "add", "in b work")
+	if out := mustRunCLI(t, b, "list", "-s", "work"); !strings.Contains(out, "in b work") {
+		t.Errorf("write through --file did not land: %q", out)
+	}
+}
+
+func TestFileFlagRejectsBadPaths(t *testing.T) {
+	p := scratch(t)
+	for _, bad := range []string{"relative.json", "~/tasks.json", filepath.Join(t.TempDir(), "nope", "t.json")} {
+		if _, err := runCLI(t, p, "--file", bad, "list"); err == nil {
+			t.Errorf("--file %q should fail", bad)
+		}
+	}
+}
+
+func TestExportImportThroughTheCLI(t *testing.T) {
+	src := scratch(t)
+	mustRunCLI(t, src, "space", "new", "work")
+	mustRunCLI(t, src, "-s", "work", "add", "carry me")
+	out := filepath.Join(t.TempDir(), "work.json")
+
+	if got := mustRunCLI(t, src, "space", "export", "work", out); !strings.Contains(got, "exported space work") {
+		t.Errorf("export = %q", got)
+	}
+	// The export opens on its own.
+	if got := mustRunCLI(t, src, "--file", out, "list"); !strings.Contains(got, "carry me") {
+		t.Errorf("the exported file should open with --file: %q", got)
+	}
+	// Refuses to clobber, then imports elsewhere.
+	if _, err := runCLI(t, src, "space", "export", "work", out); err == nil {
+		t.Error("a second export to the same path should need --force")
+	}
+
+	dst := scratch(t)
+	if got := mustRunCLI(t, dst, "space", "import", out); !strings.Contains(got, "imported space work") {
+		t.Errorf("import = %q", got)
+	}
+	if got := mustRunCLI(t, dst, "list", "-s", "work"); !strings.Contains(got, "carry me") {
+		t.Errorf("imported list = %q", got)
+	}
+	// A second import collides, and --as gives it a home.
+	if _, err := runCLI(t, dst, "space", "import", out); err == nil {
+		t.Error("importing onto an existing name should fail")
+	}
+	if got := mustRunCLI(t, dst, "space", "import", out, "--as", "laptop"); !strings.Contains(got, "laptop") {
+		t.Errorf("import --as = %q", got)
+	}
+}
+
+func TestExportDoesNotCarryMCPAccess(t *testing.T) {
+	src := scratch(t)
+	mustRunCLI(t, src, "mcp", "enable")
+	out := filepath.Join(t.TempDir(), "exported.json")
+	mustRunCLI(t, src, "space", "export", "default", out)
+
+	if got := mustRunCLI(t, src, "--file", out, "mcp", "status"); !strings.Contains(got, "MCP access: off") {
+		t.Errorf("exported file status = %q, want access off", got)
+	}
+}
+
+// The space commands are exempt from --space, not from --file: reading or
+// importing into another document is the whole point of the flag. Wiring them to
+// the unflagged opener made `ike -f other.json space list` describe the wrong
+// file, which looked right until the two files had different spaces.
+func TestSpaceCommandsHonorTheFileFlag(t *testing.T) {
+	a, b := scratch(t), scratch(t)
+	mustRunCLI(t, a, "space", "new", "only-in-a")
+	mustRunCLI(t, b, "space", "new", "only-in-b")
+
+	out := mustRunCLI(t, a, "--file", b, "space", "list")
+	if !strings.Contains(out, "only-in-b") || strings.Contains(out, "only-in-a") {
+		t.Errorf("space list --file = %q, want the other file's spaces", out)
+	}
+	// And a write through the flag lands in that file.
+	mustRunCLI(t, a, "--file", b, "space", "new", "made-through-flag")
+	if got := mustRunCLI(t, b, "space", "list"); !strings.Contains(got, "made-through-flag") {
+		t.Errorf("b = %q, want the space created through --file", got)
+	}
+	if got := mustRunCLI(t, a, "space", "list"); strings.Contains(got, "made-through-flag") {
+		t.Errorf("a = %q, want it untouched", got)
+	}
+	// An exported single-space file lists only that space.
+	out2 := filepath.Join(t.TempDir(), "one.json")
+	mustRunCLI(t, a, "space", "export", "only-in-a", out2)
+	listing := mustRunCLI(t, a, "--file", out2, "space", "list")
+	if !strings.Contains(listing, "only-in-a") || strings.Contains(listing, "default") {
+		t.Errorf("exported listing = %q, want only the exported space", listing)
 	}
 }

@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -21,6 +22,7 @@ const (
 	modeMove
 	modeArchive
 	modeSpaces
+	modeFiles
 )
 
 // inputPurpose says what the shared text input is currently collecting.
@@ -40,6 +42,7 @@ const (
 	inputRenameQuadrant
 	inputNewSpace
 	inputRenameSpace
+	inputOpenFile
 )
 
 // refreshInterval is how often the TUI checks the data file for changes
@@ -68,6 +71,8 @@ type Model struct {
 	pendingSpace  string // space name awaiting a second `d` press in the picker
 	archCursor    int
 	spaceCursor   int
+	fileCursor    int
+	recent        []string // data files opened before, most recent first
 	showHelp      bool
 
 	status  string
@@ -98,6 +103,8 @@ func New(s *store.Store) (Model, error) {
 	ti := textinput.New()
 	ti.CharLimit = 200
 
+	store.RememberRecent(s.Path())
+
 	return Model{
 		store:     s,
 		data:      data,
@@ -106,6 +113,7 @@ func New(s *store.Store) (Model, error) {
 		input:     ti,
 		isDark:    true,
 		lastMtime: mtime,
+		recent:    store.LoadRecent().Paths,
 	}, nil
 }
 
@@ -362,6 +370,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleArchiveKey(msg)
 	case modeSpaces:
 		return m.handleSpacesKey(msg)
+	case modeFiles:
+		return m.handleFilesKey(msg)
 	}
 	return m.handleNormalKey(msg)
 }
@@ -483,6 +493,11 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.cursorToSpace(m.data.Space)
 
+	case key.Matches(msg, keys.Files):
+		m.mode = modeFiles
+		m.status = ""
+		m.fileCursor = 0
+
 	case key.Matches(msg, keys.NextSpace):
 		m.cycleSpace(1)
 
@@ -541,6 +556,61 @@ func (m Model) handleSpacesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// handleFilesKey drives the file picker: the recently opened data files, plus a
+// prompt for typing a path that is not in the list.
+func (m Model) handleFilesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Quit), key.Matches(msg, keys.Cancel), key.Matches(msg, keys.Files):
+		m.mode = modeNormal
+		m.status = ""
+
+	case key.Matches(msg, keys.Confirm):
+		if m.fileCursor >= 0 && m.fileCursor < len(m.recent) {
+			m.mode = modeNormal
+			m.openFile(m.recent[m.fileCursor])
+		}
+
+	case key.Matches(msg, keys.Down):
+		if m.fileCursor < len(m.recent)-1 {
+			m.fileCursor++
+		}
+
+	case key.Matches(msg, keys.Up):
+		if m.fileCursor > 0 {
+			m.fileCursor--
+		}
+
+	case key.Matches(msg, keys.OpenFile):
+		return m, m.enterInput(inputOpenFile, modeFiles, "", "absolute path to a data file")
+	}
+	return m, nil
+}
+
+// openFile switches the whole TUI to another data file.
+//
+// A failure leaves the model exactly where it was, showing why: pointing at a
+// path that turns out to be unreadable should not cost you the session you were
+// already in. The path goes through the same validation as --file, so the rules
+// do not depend on which way you opened it.
+func (m *Model) openFile(path string) {
+	s, err := store.OpenPath("path", path)
+	if err != nil {
+		m.status = err.Error()
+		return
+	}
+	d, err := s.Load()
+	if err != nil {
+		m.status = err.Error()
+		return
+	}
+	m.store = s.InSpace(d.Space)
+	store.RememberRecent(m.store.Path())
+	m.recent = store.LoadRecent().Paths
+	m.fileCursor = 0
+	m.switchTo(d)
+	m.status = fmt.Sprintf("opened %s", path)
 }
 
 // deleteSpace removes the selected space on a second `d`, having first said
@@ -604,6 +674,13 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if err = m.store.RenameSpace(spaceName, value); err == nil {
 				d, err = m.store.Load()
 			}
+		case inputOpenFile:
+			// Opening a file replaces the store rather than writing to it, so it
+			// bypasses apply entirely and reports for itself.
+			m.exitInput()
+			m.mode = modeNormal
+			m.openFile(strings.TrimSpace(value))
+			return m, nil
 		default:
 			_, d, err = m.store.Add(value, m.focus)
 		}
