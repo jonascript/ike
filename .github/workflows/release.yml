@@ -76,18 +76,28 @@ jobs:
       - name: Update the Homebrew tap
         if: ${{ env.HOMEBREW_TAP_TOKEN != '' }}
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           TAP: jonascript/homebrew-tap
         run: |
           set -euo pipefail
           version="${TAG#v}"
           url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
-          curl -fsSL -o source.tar.gz "$url"
+          # Authenticated deliberately. While this repository is private the tag
+          # tarball 404s anonymously, so an unauthenticated fetch cannot be
+          # rehearsed before going public — and it costs nothing once public.
+          # It fetches the exact URL the formula points at rather than the
+          # equivalent API endpoint, so the checksum is byte-identical to what
+          # Homebrew will download.
+          curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -o source.tar.gz "$url"
           sha=$(sha256sum source.tar.gz | cut -d' ' -f1)
           echo "tag=$TAG version=$version sha256=$sha"
 
           git clone --depth 1 \
             "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP}.git" tap
+          # A tap created by `gh repo create` has no Formula directory, and only
+          # `brew tap-new` makes one, so do not assume it exists.
+          mkdir -p tap/Formula
           cp packaging/ike.rb tap/Formula/ike.rb
           cd tap
           sed -i -E "s|^  url \".*\"|  url \"${url}\"|" Formula/ike.rb
