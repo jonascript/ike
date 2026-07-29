@@ -50,7 +50,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Skipped while the repository is private: GitHub does not offer the
+      # attestation API for user-owned private repos, and an unconditional step
+      # fails the whole job after goreleaser has already published — which also
+      # skips the tap update below. Found by rehearsing a tag before going
+      # public. Once public this runs, and a download can be checked with
+      # `gh attestation verify <file> --repo jonascript/ike`.
       - name: Attest build provenance
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
