@@ -117,76 +117,50 @@ func (m Model) renderSpaceHeader() string {
 // renderSpaces is the space picker: a full-screen list, in the shape of the
 // archive view, that can also create, rename, and delete what it lists.
 func (m Model) renderSpaces() string {
-	dim := lipgloss.NewStyle().Foreground(m.dimColor())
 	spaces := m.data.AllSpaces
-	title := lipgloss.NewStyle().Bold(true).
-		Render(fmt.Sprintf("Spaces — %d", len(spaces)))
-
-	visible := m.height - 4 // title + blank + status + footer
-	offset := 0
-	if m.spaceCursor >= visible {
-		offset = m.spaceCursor - visible + 1
-	}
-
 	width := 0
 	for _, sp := range spaces {
 		width = max(width, ansi.StringWidth(task.SanitizeDisplay(sp.Name)))
 	}
-
-	lines := []string{title, ""}
-	for i := offset; i < len(spaces) && i-offset < visible; i++ {
-		sp := spaces[i]
+	rows := make([]string, len(spaces))
+	for i, sp := range spaces {
 		// The current space is where every other frontend acts, so it is marked
 		// even when the cursor is elsewhere in the list.
 		current := " "
 		if sp.Current {
 			current = "•"
 		}
-		row := fmt.Sprintf("  %s %-*s  %d active, %d archived",
+		rows[i] = fmt.Sprintf("  %s %-*s  %d active, %d archived",
 			current, width, task.SanitizeDisplay(sp.Name), sp.Active, sp.Archived)
-		if i == m.spaceCursor {
-			row = lipgloss.NewStyle().Bold(true).Render("▸" + row[1:])
-		}
-		lines = append(lines, ansi.Truncate(row, m.width, "…"))
 	}
-	lines = append(lines,
-		ansi.Truncate(m.status, m.width, "…"),
-		dim.Render("enter switch · n new · r rename · d twice delete · j/k select · s/esc/q back"),
-	)
-	return strings.Join(lines, "\n")
+	return m.renderList(listView{
+		title:  fmt.Sprintf("Spaces — %d", len(spaces)),
+		rows:   rows,
+		cursor: m.spaceCursor,
+		hint:   "enter switch · n new · r rename · d twice delete · j/k select · s/esc/q back",
+	})
 }
 
 // renderFiles is the data file picker: the files opened before, and a way to
 // type a path that is not among them.
 func (m Model) renderFiles() string {
-	dim := lipgloss.NewStyle().Foreground(m.dimColor())
-	title := lipgloss.NewStyle().Bold(true).Render("Data files")
-
-	visible := m.height - 5 // title + blank + current + status + footer
-	offset := 0
-	if m.fileCursor >= visible {
-		offset = m.fileCursor - visible + 1
-	}
-
-	lines := []string{title, "", dim.Render("current: " + m.store.Path()), ""}
-	if len(m.recent) == 0 {
-		lines = append(lines, dim.Italic(true).Render("no other files opened yet — press o to type a path"))
-	}
-	for i := offset; i < len(m.recent) && i-offset < visible; i++ {
-		row := "    " + m.recent[i]
-		if m.recent[i] == m.store.Path() {
-			row = "  • " + m.recent[i]
+	rows := make([]string, len(m.recent))
+	for i, path := range m.recent {
+		// The file in use is marked even when the cursor is elsewhere.
+		gutter := "    "
+		if path == m.store.Path() {
+			gutter = "  • "
 		}
-		if i == m.fileCursor {
-			row = lipgloss.NewStyle().Bold(true).Render("▸" + row[1:])
-		}
-		lines = append(lines, ansi.Truncate(row, m.width, "…"))
+		rows[i] = gutter + path
 	}
-	lines = append(lines,
-		ansi.Truncate(m.status, m.width, "…"),
-		dim.Render("enter open · o type a path · j/k select · f/esc/q back"),
-	)
-	return strings.Join(lines, "\n")
+	return m.renderList(listView{
+		title:  "Data files",
+		header: []string{lipgloss.NewStyle().Foreground(m.dimColor()).Render("current: " + m.store.Path()), ""},
+		rows:   rows,
+		empty:  "no other files opened yet — press o to type a path",
+		cursor: m.fileCursor,
+		hint:   "enter open · o type a path · j/k select · f/esc/q back",
+	})
 }
 
 // center pads s to width w, centered.
@@ -374,34 +348,18 @@ func (m Model) withMCPIndicator(line string) string {
 }
 
 func (m Model) renderArchive() string {
-	dim := lipgloss.NewStyle().Foreground(m.dimColor())
-	title := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("Archive — %d completed in %s",
-		len(m.data.Archive), task.SanitizeDisplay(m.data.Space)))
-
 	// Newest completion first, matching `ike archive`.
 	arch := m.data.ListArchive()
-
-	visible := m.height - 4 // title + blank + status + footer
-	offset := 0
-	if m.archCursor >= visible {
-		offset = m.archCursor - visible + 1
+	rows := make([]string, len(arch))
+	for i, t := range arch {
+		rows[i] = t.ArchiveRow(ansi.Truncate(t.DisplayTitle(), max(m.width-20, 4), "…"))
 	}
-
-	lines := []string{title, ""}
-	if len(arch) == 0 {
-		lines = append(lines, dim.Italic(true).Render("nothing completed yet"))
-	}
-	for i := offset; i < len(arch) && i-offset < visible; i++ {
-		t := arch[i]
-		line := t.ArchiveRow(ansi.Truncate(t.DisplayTitle(), max(m.width-20, 4), "…"))
-		if i == m.archCursor {
-			line = lipgloss.NewStyle().Bold(true).Render("▸" + line[1:])
-		}
-		lines = append(lines, line)
-	}
-	lines = append(lines,
-		ansi.Truncate(m.status, m.width, "…"),
-		dim.Render("r restore to its quadrant · j/k scroll · v/esc/q back"),
-	)
-	return strings.Join(lines, "\n")
+	return m.renderList(listView{
+		title: fmt.Sprintf("Archive — %d completed in %s",
+			len(arch), task.SanitizeDisplay(m.data.Space)),
+		rows:   rows,
+		empty:  "nothing completed yet",
+		cursor: m.archCursor,
+		hint:   "r restore to its quadrant · j/k scroll · v/esc/q back",
+	})
 }

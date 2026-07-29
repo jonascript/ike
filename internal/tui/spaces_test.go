@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -502,5 +504,87 @@ func TestHelpMentionsFiles(t *testing.T) {
 	m = press(t, m, "?")
 	if !strings.Contains(m.render(), "f data files") {
 		t.Errorf("help lacks the file key:\n%s", m.render())
+	}
+}
+
+// Every full-screen list must fit the terminal it was given. The three used to
+// be three copies of the same scroll arithmetic, and the file picker's copy
+// reserved five rows of chrome while drawing six — so a long list ran one line
+// past the bottom. Checking all three together is what keeps a fourth list, or
+// an extra header line, from reintroducing it.
+func TestListViewsFitTheTerminal(t *testing.T) {
+	m, s := spacesModel(t)
+
+	// Enough of everything to overflow a short screen: archived tasks, spaces,
+	// and remembered files.
+	for i := range 40 {
+		tk, _, err := s.Add("task", task.Do)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i%2 == 0 {
+			if _, _, err := s.Complete(tk.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := s.NewSpace(fmt.Sprintf("space-%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	for i := range 15 {
+		p := filepath.Join(dir, fmt.Sprintf("f%02d.json", i))
+		if err := os.WriteFile(p, []byte(`{"version":4,"current":"default","spaces":{"default":{"next_id":1}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		store.RememberRecent(p)
+	}
+	m.recent = store.LoadRecent().Paths
+	m.refreshFromStore(t)
+
+	for _, mode := range []struct {
+		name string
+		m    mode
+	}{{"archive", modeArchive}, {"spaces", modeSpaces}, {"files", modeFiles}} {
+		m.mode = mode.m
+		for _, h := range []int{minHeight, 13, 16, 24, 40} {
+			m.width, m.height = 100, h
+			got := len(strings.Split(m.render(), "\n"))
+			if got > h {
+				t.Errorf("%s at height %d rendered %d lines", mode.name, h, got)
+			}
+		}
+	}
+}
+
+// The cursor keys are shared by every list, so they are implemented once.
+func TestListCursorsClampWhenTheListShrinks(t *testing.T) {
+	m, s := spacesModel(t)
+	for i := range 5 {
+		if _, err := s.NewSpace(fmt.Sprintf("s%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.refreshFromStore(t)
+
+	m = press(t, m, "s", "j", "j", "j", "j", "j", "j")
+	if m.spaceCursor == 0 {
+		t.Fatal("the cursor should have moved down the list")
+	}
+	// Another frontend removes most of the spaces under the open picker.
+	for i := range 5 {
+		if _, err := store.OpenAt(s.Path()).RemoveSpace(fmt.Sprintf("s%d", i), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next, _ := m.Update(tickMsg{})
+	m = next.(Model)
+
+	if m.spaceCursor >= len(m.data.AllSpaces) {
+		t.Errorf("spaceCursor = %d with %d spaces, want it clamped",
+			m.spaceCursor, len(m.data.AllSpaces))
+	}
+	if _, ok := m.selectedSpace(); !ok {
+		t.Error("a clamped cursor should still select a row")
 	}
 }

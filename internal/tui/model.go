@@ -157,9 +157,11 @@ func (m *Model) clampCursors() {
 	}
 	// A count, not an index: ListArchive is a permutation of Archive, so the
 	// lengths agree. Anything that *indexes* must go through ListArchive.
-	if n := len(m.data.Archive); m.archCursor >= n {
-		m.archCursor = max(n-1, 0)
-	}
+	clampCursor(&m.archCursor, len(m.data.Archive))
+	// The picker lists can shrink under an open picker — another frontend
+	// removing a space, or a recent file that has since been deleted.
+	clampCursor(&m.spaceCursor, len(m.data.AllSpaces))
+	clampCursor(&m.fileCursor, len(m.recent))
 }
 
 // refresh replaces the model's data and re-clamps cursors.
@@ -520,6 +522,9 @@ func (m Model) handleSpacesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 	}
 
+	if moveCursor(&m.spaceCursor, len(m.data.AllSpaces), msg) {
+		return m, nil
+	}
 	switch {
 	case key.Matches(msg, keys.Quit), key.Matches(msg, keys.Cancel), key.Matches(msg, keys.Spaces):
 		m.mode = modeNormal
@@ -529,16 +534,6 @@ func (m Model) handleSpacesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if sp, ok := m.selectedSpace(); ok {
 			m.mode = modeNormal
 			m.useSpace(sp.Name)
-		}
-
-	case key.Matches(msg, keys.Down):
-		if m.spaceCursor < len(m.data.AllSpaces)-1 {
-			m.spaceCursor++
-		}
-
-	case key.Matches(msg, keys.Up):
-		if m.spaceCursor > 0 {
-			m.spaceCursor--
 		}
 
 	case key.Matches(msg, keys.NewSpace):
@@ -561,6 +556,9 @@ func (m Model) handleSpacesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // handleFilesKey drives the file picker: the recently opened data files, plus a
 // prompt for typing a path that is not in the list.
 func (m Model) handleFilesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if moveCursor(&m.fileCursor, len(m.recent), msg) {
+		return m, nil
+	}
 	switch {
 	case key.Matches(msg, keys.Quit), key.Matches(msg, keys.Cancel), key.Matches(msg, keys.Files):
 		m.mode = modeNormal
@@ -570,16 +568,6 @@ func (m Model) handleFilesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.fileCursor >= 0 && m.fileCursor < len(m.recent) {
 			m.mode = modeNormal
 			m.openFile(m.recent[m.fileCursor])
-		}
-
-	case key.Matches(msg, keys.Down):
-		if m.fileCursor < len(m.recent)-1 {
-			m.fileCursor++
-		}
-
-	case key.Matches(msg, keys.Up):
-		if m.fileCursor > 0 {
-			m.fileCursor--
 		}
 
 	case key.Matches(msg, keys.OpenFile):
@@ -725,6 +713,9 @@ func (m Model) handleMoveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleArchiveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if moveCursor(&m.archCursor, len(m.data.Archive), msg) {
+		return m, nil
+	}
 	switch {
 	case key.Matches(msg, keys.Quit), key.Matches(msg, keys.Cancel), key.Matches(msg, keys.Archive):
 		m.mode = modeNormal
@@ -738,15 +729,6 @@ func (m Model) handleArchiveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("restored %q to %d · %s",
 					t.DisplayTitle(), t.Quadrant, m.data.Labels.Of(t.Quadrant))
 			}
-		}
-
-	case key.Matches(msg, keys.Down):
-		if m.archCursor < len(m.data.Archive)-1 {
-			m.archCursor++
-		}
-	case key.Matches(msg, keys.Up):
-		if m.archCursor > 0 {
-			m.archCursor--
 		}
 	}
 	return m, nil
