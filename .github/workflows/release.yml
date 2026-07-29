@@ -73,23 +73,30 @@ jobs:
       # alone with Contents: read/write. The default GITHUB_TOKEN cannot write
       # to another repository. Until that secret exists this step is skipped,
       # so the release itself still succeeds.
+      # Also gated on the repository being public, for a reason that is not
+      # obvious: the checksum has to come from the exact URL the formula points
+      # at, and github.com's /archive/ endpoint does not accept the Actions
+      # GITHUB_TOKEN, so on a private repo it 404s. api.github.com's tarball
+      # endpoint *would* authenticate, but it returns a different archive —
+      # verified: prefix `jonascript-ike-<sha>/` instead of `ike-<version>/`,
+      # and a different sha256 — so its checksum would not match what Homebrew
+      # downloads, producing a formula that fails to install. A token that works
+      # against /archive/ would have to be a broad PAT, which is not worth
+      # carrying for the sake of a private-repo rehearsal. So this step runs for
+      # real once the repository is public, where the anonymous fetch below just
+      # works.
       - name: Update the Homebrew tap
-        if: ${{ env.HOMEBREW_TAP_TOKEN != '' }}
+        if: ${{ env.HOMEBREW_TAP_TOKEN != '' && !github.event.repository.private }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           TAP: jonascript/homebrew-tap
         run: |
           set -euo pipefail
           version="${TAG#v}"
           url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
-          # Authenticated deliberately. While this repository is private the tag
-          # tarball 404s anonymously, so an unauthenticated fetch cannot be
-          # rehearsed before going public — and it costs nothing once public.
-          # It fetches the exact URL the formula points at rather than the
-          # equivalent API endpoint, so the checksum is byte-identical to what
-          # Homebrew will download.
-          curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -o source.tar.gz "$url"
+          # The exact URL the formula points at, fetched the same anonymous way
+          # Homebrew will, so the checksum cannot disagree with what it verifies.
+          curl -fsSL -o source.tar.gz "$url"
           sha=$(sha256sum source.tar.gz | cut -d' ' -f1)
           echo "tag=$TAG version=$version sha256=$sha"
 
