@@ -8,9 +8,20 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jonascript/ike/internal/task"
 )
+
+// withLockTimeout temporarily changes how long a mutation waits for the lock,
+// returning the function that restores it. Tests about contention need a bound
+// generous enough that a loaded machine cannot make them fail for the wrong
+// reason; the one test about the timeout itself shrinks it instead.
+func withLockTimeout(d time.Duration) func() {
+	old := lockTimeout
+	lockTimeout = d
+	return func() { lockTimeout = old }
+}
 
 func testStore(t *testing.T) *Store {
 	t.Helper()
@@ -160,6 +171,13 @@ func TestCorruptAndWrongVersion(t *testing.T) {
 }
 
 func TestConcurrentWriters(t *testing.T) {
+	// What is being tested is that no update is lost, not that 80 queued writes
+	// finish inside the default 5s. On a slow two-core CI runner they do not, and
+	// the test failed with "lost updates" when what actually happened was that
+	// half the writers gave up waiting — a real but entirely different thing.
+	// Raising the bound here keeps the test about the lock rather than the clock.
+	defer withLockTimeout(30 * time.Second)()
+
 	dir := t.TempDir()
 	p := filepath.Join(dir, "tasks.json")
 

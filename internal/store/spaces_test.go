@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jonascript/ike/internal/task"
 )
@@ -437,6 +438,10 @@ func TestListSpacesCountsAndOrder(t *testing.T) {
 // lost. This is what would break if the space operations grew a second write
 // path instead of going through mutateFile.
 func TestConcurrentWritersAcrossSpaces(t *testing.T) {
+	// See TestConcurrentWriters: the point is that nothing is lost, not that the
+	// writes beat the default timeout on a slow machine.
+	defer withLockTimeout(30 * time.Second)()
+
 	s := spacesStore(t, "work")
 	const perSpace = 15
 
