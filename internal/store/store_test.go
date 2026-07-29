@@ -18,14 +18,14 @@ func testStore(t *testing.T) *Store {
 func TestAddListRoundTrip(t *testing.T) {
 	s := testStore(t)
 
-	a, err := s.Add("fix prod bug", task.Do)
+	a, _, err := s.Add("fix prod bug", task.Do)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a.ID != 1 {
 		t.Errorf("first ID = %d, want 1", a.ID)
 	}
-	b, err := s.Add("plan roadmap", task.Schedule)
+	b, _, err := s.Add("plan roadmap", task.Schedule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,20 +51,20 @@ func TestAddListRoundTrip(t *testing.T) {
 
 func TestAddValidates(t *testing.T) {
 	s := testStore(t)
-	if _, err := s.Add("  ", task.Do); err == nil {
+	if _, _, err := s.Add("  ", task.Do); err == nil {
 		t.Error("Add with blank title should fail")
 	}
-	if _, err := s.Add("x", 9); err == nil {
+	if _, _, err := s.Add("x", 9); err == nil {
 		t.Error("Add with bad quadrant should fail")
 	}
 }
 
 func TestCompleteMovesToArchiveAndKeepsID(t *testing.T) {
 	s := testStore(t)
-	a, _ := s.Add("one", task.Do)
+	a, _, _ := s.Add("one", task.Do)
 	s.Add("two", task.Do)
 
-	done, err := s.Complete(a.ID)
+	done, _, err := s.Complete(a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,37 +82,37 @@ func TestCompleteMovesToArchiveAndKeepsID(t *testing.T) {
 	}
 
 	// IDs are never reused, even after completion.
-	c, _ := s.Add("three", task.Do)
+	c, _, _ := s.Add("three", task.Do)
 	if c.ID != 3 {
 		t.Errorf("ID after completion = %d, want 3", c.ID)
 	}
 
-	if _, err := s.Complete(a.ID); err == nil {
+	if _, _, err := s.Complete(a.ID); err == nil {
 		t.Error("completing an archived task should fail")
 	}
 }
 
 func TestMoveRenameDelete(t *testing.T) {
 	s := testStore(t)
-	a, _ := s.Add("one", task.Do)
+	a, _, _ := s.Add("one", task.Do)
 
-	m, err := s.Move(a.ID, task.Eliminate)
+	m, _, err := s.Move(a.ID, task.Eliminate)
 	if err != nil || m.Quadrant != task.Eliminate {
 		t.Errorf("Move = %+v, %v", m, err)
 	}
-	if _, err := s.Move(a.ID, 7); err == nil {
+	if _, _, err := s.Move(a.ID, 7); err == nil {
 		t.Error("Move to invalid quadrant should fail")
 	}
 
-	r, err := s.Rename(a.ID, "renamed")
+	r, _, err := s.Rename(a.ID, "renamed")
 	if err != nil || r.Title != "renamed" {
 		t.Errorf("Rename = %+v, %v", r, err)
 	}
-	if _, err := s.Rename(a.ID, ""); err == nil {
+	if _, _, err := s.Rename(a.ID, ""); err == nil {
 		t.Error("Rename to empty should fail")
 	}
 
-	if _, err := s.Delete(a.ID); err != nil {
+	if _, _, err := s.Delete(a.ID); err != nil {
 		t.Fatal(err)
 	}
 	active, _ := s.List(0)
@@ -120,7 +120,7 @@ func TestMoveRenameDelete(t *testing.T) {
 	if len(active) != 0 || len(arch) != 0 {
 		t.Error("Delete should remove permanently, not archive")
 	}
-	if _, err := s.Delete(a.ID); err == nil {
+	if _, _, err := s.Delete(a.ID); err == nil {
 		t.Error("deleting a missing task should fail")
 	}
 }
@@ -152,7 +152,7 @@ func TestCorruptAndWrongVersion(t *testing.T) {
 
 	// A mutation must not clobber a corrupt file either.
 	os.WriteFile(p, []byte("{not json"), 0o644)
-	if _, err := OpenAt(p).Add("x", task.Do); err == nil {
+	if _, _, err := OpenAt(p).Add("x", task.Do); err == nil {
 		t.Error("Add over corrupt file should error")
 	}
 }
@@ -171,7 +171,7 @@ func TestConcurrentWriters(t *testing.T) {
 			defer wg.Done()
 			s := OpenAt(p) // separate Store instances, like separate processes
 			for i := 0; i < perWriter; i++ {
-				if _, err := s.Add("t", task.Do); err != nil {
+				if _, _, err := s.Add("t", task.Do); err != nil {
 					t.Error(err)
 					return
 				}

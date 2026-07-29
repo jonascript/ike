@@ -3,6 +3,7 @@ package task
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestQuadrantValid(t *testing.T) {
@@ -155,5 +156,61 @@ func TestDisplayTitleNeutralizesUntrustedFile(t *testing.T) {
 	// The text stays legible; only the control bytes are replaced.
 	if !strings.Contains(got, "real") || !strings.Contains(got, "FAKE INJECTED") {
 		t.Errorf("DisplayTitle() = %q, dropped visible text", got)
+	}
+}
+
+func TestArchiveDate(t *testing.T) {
+	when := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	got := Task{ID: 1, DoneAt: &when}.ArchiveDate()
+	if want := when.Local().Format("2006-01-02"); got != want {
+		t.Errorf("ArchiveDate() = %q, want %q", got, want)
+	}
+	// A task with no completion stamp — reachable from a hand-edited or
+	// pre-archive file — renders a blank date rather than a zero-time one.
+	if got := (Task{ID: 1}).ArchiveDate(); got != "" {
+		t.Errorf("ArchiveDate() with no stamp = %q, want empty", got)
+	}
+}
+
+// ArchiveRow is the single definition of an archive line, rendered by both
+// `ike archive` and the TUI's archive view.
+func TestArchiveRow(t *testing.T) {
+	when := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	tk := Task{ID: 7, Title: "ship it", DoneAt: &when}
+
+	got := tk.ArchiveRow(tk.DisplayTitle())
+	want := "    7  " + tk.ArchiveDate() + "  ship it"
+	if got != want {
+		t.Errorf("ArchiveRow() = %q, want %q", got, want)
+	}
+	// The title is supplied, so the TUI can pass a width-truncated one.
+	if got := tk.ArchiveRow("ship…"); !strings.HasSuffix(got, "ship…") {
+		t.Errorf("ArchiveRow() should render the title it is given: %q", got)
+	}
+}
+
+func TestLessAndSortOrder(t *testing.T) {
+	ts := []Task{
+		{ID: 4, Quadrant: Schedule, Rank: 1024},
+		{ID: 1, Quadrant: Do, Rank: 2048},
+		{ID: 2, Quadrant: Do, Rank: 1024},
+		{ID: 3, Quadrant: Do}, // unranked: sorts by ID, after ranked peers
+	}
+	SortOrder(ts)
+
+	var got []int
+	for _, t := range ts {
+		got = append(got, t.ID)
+	}
+	// Quadrant first, then rank, then ID. Rank 0 sorts ahead of any real rank,
+	// which is why normalizeRanks backfills it on every read.
+	want := []int{3, 2, 1, 4}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("SortOrder = %v, want %v", got, want)
+		}
+	}
+	if Less(ts[0], ts[0]) {
+		t.Error("Less must be irreflexive")
 	}
 }

@@ -3,7 +3,6 @@ package tui
 
 import (
 	"fmt"
-	"slices"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -95,29 +94,9 @@ func tick() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-// tasksIn returns the active tasks of quadrant q in display order.
-func (m Model) tasksIn(q task.Quadrant) []task.Task {
-	var out []task.Task
-	for _, t := range m.data.Tasks {
-		if t.Quadrant == q {
-			out = append(out, t)
-		}
-	}
-	task.SortOrder(out)
-	return out
-}
-
-// archiveList returns the archive newest-completion-first — the order the
-// archive view renders and archCursor indexes into.
-func (m Model) archiveList() []task.Task {
-	arch := slices.Clone(m.data.Archive)
-	slices.Reverse(arch)
-	return arch
-}
-
 // selected returns the task under the cursor, if any.
 func (m Model) selected() (task.Task, bool) {
-	tasks := m.tasksIn(m.focus)
+	tasks := m.data.List(m.focus)
 	i := m.cursor[m.focus]
 	if i < 0 || i >= len(tasks) {
 		return task.Task{}, false
@@ -127,7 +106,7 @@ func (m Model) selected() (task.Task, bool) {
 
 func (m *Model) clampCursors() {
 	for q := task.Do; q <= task.Eliminate; q++ {
-		n := len(m.tasksIn(q))
+		n := len(m.data.List(q))
 		if m.cursor[q] >= n {
 			m.cursor[q] = n - 1
 		}
@@ -135,6 +114,8 @@ func (m *Model) clampCursors() {
 			m.cursor[q] = 0
 		}
 	}
+	// A count, not an index: ListArchive is a permutation of Archive, so the
+	// lengths agree. Anything that *indexes* must go through ListArchive.
 	if n := len(m.data.Archive); m.archCursor >= n {
 		m.archCursor = max(n-1, 0)
 	}
@@ -149,21 +130,27 @@ func (m *Model) refresh(d store.Data) {
 	m.clampCursors()
 }
 
-// mutate runs fn against the store and refreshes, surfacing errors in status.
-func (m *Model) mutate(fn func() (store.Data, error)) {
-	d, err := fn()
+// apply takes the two results of a store mutation and re-renders from them,
+// reporting whether it succeeded.
+//
+// Callers use the bool to decide whether to set a success message. Signaling
+// failure through m.status instead was the reason a failed complete, delete, or
+// move used to overwrite its own error with "done: …" and leave the row on
+// screen: there was nothing to check but the status text itself.
+func (m *Model) apply(d store.Data, err error) bool {
 	if err != nil {
 		m.status = err.Error()
-		return
+		return false
 	}
 	m.refresh(d)
+	return true
 }
 
 // cursorTo puts the cursor on the task with the given ID, so the selection
 // follows a task that moved.
 func (m *Model) cursorTo(id int) {
 	for q := task.Do; q <= task.Eliminate; q++ {
-		for i, t := range m.tasksIn(q) {
+		for i, t := range m.data.List(q) {
 			if t.ID == id {
 				m.cursor[q] = i
 				return
@@ -173,19 +160,10 @@ func (m *Model) cursorTo(id int) {
 }
 
 // history runs an undo or redo step, reporting what moved in the status line.
-// Either stack being empty surfaces as an ordinary status message via mutate.
-func (m *Model) history(verb string, step func() (string, error)) {
-	var label string
-	m.status = ""
-	m.mutate(func() (store.Data, error) {
-		l, err := step()
-		if err != nil {
-			return store.Data{}, err
-		}
-		label = l
-		return m.store.Load()
-	})
-	if label != "" {
+// Either stack being empty arrives as an ordinary error and shows as one.
+func (m *Model) history(verb string, step func() (string, store.Data, error)) {
+	label, d, err := step()
+	if m.apply(d, err) {
 		m.status = fmt.Sprintf("%s %s", verb, label)
 	}
 }
@@ -196,14 +174,10 @@ func (m *Model) reorder(delta int) {
 	if !ok {
 		return
 	}
-	m.status = ""
-	m.mutate(func() (store.Data, error) {
-		if _, err := m.store.Reorder(t.ID, delta); err != nil {
-			return store.Data{}, err
-		}
-		return m.store.Load()
-	})
-	m.cursorTo(t.ID)
+	if _, d, err := m.store.Reorder(t.ID, delta); m.apply(d, err) {
+		m.status = ""
+		m.cursorTo(t.ID)
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -251,6 +225,29 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.handleNormalKey(msg)
 }
 
+// enterInput switches to input mode with all four pieces of input state set
+// together. Setting them one at a time across the call sites left the previous
+// session's placeholder visible in the next one.
+func (m *Model) enterInput(editingID int, labelTarget task.Quadrant, value, placeholder string) tea.Cmd {
+	m.mode = modeInput
+	m.editingID = editingID
+	m.labelTarget = labelTarget
+	m.input.SetValue(value)
+	m.input.Placeholder = placeholder
+	m.input.CursorEnd()
+	m.status = ""
+	return m.input.Focus()
+}
+
+// exitInput returns to normal mode and clears the input state, so nothing from
+// this session can leak into the next one.
+func (m *Model) exitInput() {
+	m.mode = modeNormal
+	m.editingID = 0
+	m.labelTarget = 0
+	m.input.Blur()
+}
+
 func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Any key other than a second `d` clears a pending delete.
 	pending := m.pendingDelete
@@ -273,7 +270,7 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.focus = (m.focus+2)%4 + 1
 
 	case key.Matches(msg, keys.Down):
-		if m.cursor[m.focus] < len(m.tasksIn(m.focus))-1 {
+		if m.cursor[m.focus] < len(m.data.List(m.focus))-1 {
 			m.cursor[m.focus]++
 		}
 
@@ -289,45 +286,22 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.reorder(1)
 
 	case key.Matches(msg, keys.Add):
-		m.mode = modeInput
-		m.editingID = 0
-		m.labelTarget = 0
-		m.input.SetValue("")
-		m.input.Placeholder = "task title"
-		m.status = ""
-		return m, m.input.Focus()
+		return m, m.enterInput(0, 0, "", "task title")
 
 	case key.Matches(msg, keys.Edit):
 		if t, ok := m.selected(); ok {
-			m.mode = modeInput
-			m.editingID = t.ID
-			m.labelTarget = 0
-			m.input.SetValue(t.Title)
-			m.input.CursorEnd()
-			m.status = ""
-			return m, m.input.Focus()
+			return m, m.enterInput(t.ID, 0, t.Title, "task title")
 		}
 
 	case key.Matches(msg, keys.Title):
-		m.mode = modeInput
-		m.editingID = 0
-		m.labelTarget = m.focus
-		m.input.SetValue(m.data.Labels.Of(m.focus))
-		m.input.CursorEnd()
-		m.input.Placeholder = "quadrant name (empty resets to the default)"
-		m.status = ""
-		return m, m.input.Focus()
+		return m, m.enterInput(0, m.focus, m.data.Labels.Of(m.focus),
+			"quadrant name (empty resets to the default)")
 
 	case key.Matches(msg, keys.Done):
 		if t, ok := m.selected(); ok {
-			m.mutate(func() (store.Data, error) {
-				_, err := m.store.Complete(t.ID)
-				if err != nil {
-					return store.Data{}, err
-				}
-				return m.store.Load()
-			})
-			m.status = fmt.Sprintf("done: %s", t.DisplayTitle())
+			if _, d, err := m.store.Complete(t.ID); m.apply(d, err) {
+				m.status = fmt.Sprintf("done: %s", t.DisplayTitle())
+			}
 		}
 
 	case key.Matches(msg, keys.Move):
@@ -338,18 +312,11 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.Delete):
 		if t, ok := m.selected(); ok {
-			if pending == t.ID {
-				m.mutate(func() (store.Data, error) {
-					_, err := m.store.Delete(t.ID)
-					if err != nil {
-						return store.Data{}, err
-					}
-					return m.store.Load()
-				})
-				m.status = fmt.Sprintf("deleted: %s", t.DisplayTitle())
-			} else {
+			if pending != t.ID {
 				m.pendingDelete = t.ID
 				m.status = fmt.Sprintf("press d again to delete %q", t.DisplayTitle())
+			} else if _, d, err := m.store.Delete(t.ID); m.apply(d, err) {
+				m.status = fmt.Sprintf("deleted: %s", t.DisplayTitle())
 			}
 		}
 
@@ -372,43 +339,35 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Cancel):
-		m.mode = modeNormal
-		m.labelTarget = 0
-		m.input.Blur()
+		m.exitInput()
 		return m, nil
 
 	case key.Matches(msg, keys.Confirm):
-		title := m.input.Value()
-		editing := m.editingID
-		target := m.labelTarget
-		m.status = ""
-		m.mutate(func() (store.Data, error) {
-			var err error
-			switch {
-			case target != 0:
-				_, err = m.store.SetQuadrantLabel(target, title)
-			case editing == 0:
-				_, err = m.store.Add(title, m.focus)
-			default:
-				_, err = m.store.Rename(editing, title)
-			}
-			if err != nil {
-				return store.Data{}, err
-			}
-			return m.store.Load()
-		})
-		if m.status == "" {
+		value := m.input.Value()
+		editing, target := m.editingID, m.labelTarget
+
+		var d store.Data
+		var err error
+		switch {
+		case target != 0:
+			_, d, err = m.store.SetQuadrantLabel(target, value)
+		case editing == 0:
+			_, d, err = m.store.Add(value, m.focus)
+		default:
+			_, d, err = m.store.Rename(editing, value)
+		}
+
+		if m.apply(d, err) {
+			m.status = ""
 			switch {
 			case target != 0:
 				m.status = fmt.Sprintf("quadrant %d is now %q", target, m.data.Labels.Of(target))
 			case editing == 0:
 				// Move the cursor to the task just added (last in its quadrant).
-				m.cursor[m.focus] = max(len(m.tasksIn(m.focus))-1, 0)
+				m.cursor[m.focus] = max(len(m.data.List(m.focus))-1, 0)
 			}
 		}
-		m.mode = modeNormal
-		m.labelTarget = 0
-		m.input.Blur()
+		m.exitInput()
 		return m, nil
 	}
 
@@ -423,14 +382,9 @@ func (m Model) handleMoveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, keys.Quadrant) {
 		dest := task.Quadrant(msg.Key().Code - '0')
 		if t, ok := m.selected(); ok && dest != t.Quadrant {
-			m.mutate(func() (store.Data, error) {
-				_, err := m.store.Move(t.ID, dest)
-				if err != nil {
-					return store.Data{}, err
-				}
-				return m.store.Load()
-			})
-			m.status = fmt.Sprintf("moved to %d · %s", dest, m.data.Labels.Of(dest))
+			if _, d, err := m.store.Move(t.ID, dest); m.apply(d, err) {
+				m.status = fmt.Sprintf("moved to %d · %s", dest, m.data.Labels.Of(dest))
+			}
 		}
 	}
 	return m, nil
@@ -443,18 +397,12 @@ func (m Model) handleArchiveKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 
 	case key.Matches(msg, keys.Restore):
-		arch := m.archiveList()
+		arch := m.data.ListArchive()
 		if m.archCursor < len(arch) {
 			t := arch[m.archCursor]
-			m.status = ""
-			m.mutate(func() (store.Data, error) {
-				if _, err := m.store.Restore(t.ID); err != nil {
-					return store.Data{}, err
-				}
-				return m.store.Load()
-			})
-			if m.status == "" {
-				m.status = fmt.Sprintf("restored %q to %d · %s", t.DisplayTitle(), t.Quadrant, m.data.Labels.Of(t.Quadrant))
+			if _, d, err := m.store.Restore(t.ID); m.apply(d, err) {
+				m.status = fmt.Sprintf("restored %q to %d · %s",
+					t.DisplayTitle(), t.Quadrant, m.data.Labels.Of(t.Quadrant))
 			}
 		}
 
