@@ -60,6 +60,8 @@ Run `ike` with no arguments.
 | `u` | undo the last change |
 | `U` / `ctrl+r` | redo |
 | `v` | archive view (`r` there restores a task) |
+| `s` | space picker (`enter` switch, `n` new, `r` rename, `d` twice delete) |
+| `]` / `[` | next / previous space |
 | `?` | toggle help |
 | `q` | quit |
 

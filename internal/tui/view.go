@@ -14,8 +14,12 @@ import (
 )
 
 const (
-	minWidth  = 40
-	minHeight = 10
+	minWidth = 40
+	// minHeight fits one task row: 2 footer rows, the space header, the axis
+	// labels, and two 4-row cells — a border pair, a quadrant heading, and the
+	// row itself. Below this renderTaskLines has nothing to draw in and the
+	// matrix shows headings over empty boxes.
+	minHeight = 12
 )
 
 // quadrantColor returns the accent color for a quadrant, adapted to the
@@ -50,12 +54,15 @@ func (m Model) render() string {
 	if m.mode == modeArchive {
 		return m.renderArchive()
 	}
+	if m.mode == modeSpaces {
+		return m.renderSpaces()
+	}
 
 	footer := m.renderFooter()
 	footerH := lipgloss.Height(footer)
 
 	const gutterW = 2               // vertical axis labels: letter + space
-	gridH := m.height - footerH - 1 // 1 row for the top axis labels
+	gridH := m.height - footerH - 2 // space header + top axis labels
 
 	cellW := (m.width - gutterW) / 2
 	cellH := gridH / 2
@@ -77,7 +84,73 @@ func (m Model) render() string {
 		lipgloss.JoinHorizontal(lipgloss.Top, topGutter, q1, q2),
 		lipgloss.JoinHorizontal(lipgloss.Top, botGutter, q3, q4),
 	)
-	return lipgloss.JoinVertical(lipgloss.Left, header, grid, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, m.renderSpaceHeader(), header, grid, footer)
+}
+
+// renderSpaceHeader names the space on screen. Without it there is nothing on
+// the matrix that says which one you are looking at, and the four quadrants of
+// two different spaces look alike.
+func (m Model) renderSpaceHeader() string {
+	// Styled as one run rather than bolding the name alone, so the rendered text
+	// stays contiguous: everything that reads this screen, tests included, can
+	// then match on "space <name>".
+	line := lipgloss.NewStyle().Bold(true).Render("space " + task.SanitizeDisplay(m.data.Space))
+	if n := len(m.data.AllSpaces); n > 1 {
+		at := 1
+		for i, sp := range m.data.AllSpaces {
+			if sp.Name == m.data.Space {
+				at = i + 1
+			}
+		}
+		counter := lipgloss.NewStyle().Foreground(m.dimColor()).
+			Render(fmt.Sprintf("%d of %d · s to switch", at, n))
+		if used := ansi.StringWidth(line) + 1 + ansi.StringWidth(counter); used <= m.width {
+			line += strings.Repeat(" ", m.width-used+1) + counter
+		}
+	}
+	return ansi.Truncate(line, m.width, "…")
+}
+
+// renderSpaces is the space picker: a full-screen list, in the shape of the
+// archive view, that can also create, rename, and delete what it lists.
+func (m Model) renderSpaces() string {
+	dim := lipgloss.NewStyle().Foreground(m.dimColor())
+	spaces := m.data.AllSpaces
+	title := lipgloss.NewStyle().Bold(true).
+		Render(fmt.Sprintf("Spaces — %d", len(spaces)))
+
+	visible := m.height - 4 // title + blank + status + footer
+	offset := 0
+	if m.spaceCursor >= visible {
+		offset = m.spaceCursor - visible + 1
+	}
+
+	width := 0
+	for _, sp := range spaces {
+		width = max(width, ansi.StringWidth(task.SanitizeDisplay(sp.Name)))
+	}
+
+	lines := []string{title, ""}
+	for i := offset; i < len(spaces) && i-offset < visible; i++ {
+		sp := spaces[i]
+		// The current space is where every other frontend acts, so it is marked
+		// even when the cursor is elsewhere in the list.
+		current := " "
+		if sp.Current {
+			current = "•"
+		}
+		row := fmt.Sprintf("  %s %-*s  %d active, %d archived",
+			current, width, task.SanitizeDisplay(sp.Name), sp.Active, sp.Archived)
+		if i == m.spaceCursor {
+			row = lipgloss.NewStyle().Bold(true).Render("▸" + row[1:])
+		}
+		lines = append(lines, ansi.Truncate(row, m.width, "…"))
+	}
+	lines = append(lines,
+		ansi.Truncate(m.status, m.width, "…"),
+		dim.Render("enter switch · n new · r rename · d twice delete · j/k select · s/esc/q back"),
+	)
+	return strings.Join(lines, "\n")
 }
 
 // center pads s to width w, centered.
@@ -178,11 +251,15 @@ func (m Model) renderFooter() string {
 	switch m.mode {
 	case modeInput:
 		verb := fmt.Sprintf("add to %d · %s", m.focus, m.data.Labels.Of(m.focus))
-		switch {
-		case m.labelTarget != 0:
+		switch m.purpose {
+		case inputRenameQuadrant:
 			verb = fmt.Sprintf("rename quadrant %d", m.labelTarget)
-		case m.editingID != 0:
+		case inputEditTask:
 			verb = fmt.Sprintf("edit %d", m.editingID)
+		case inputNewSpace:
+			verb = "new space"
+		case inputRenameSpace:
+			verb = fmt.Sprintf("rename space %s", task.SanitizeDisplay(m.spaceTarget))
 		}
 		status = fmt.Sprintf("%s: %s", verb, m.input.View())
 	default:
@@ -201,7 +278,7 @@ func (m Model) renderFooter() string {
 		undoHelp = "u undo · U redo"
 	}
 	help := "a add · e edit · x done · m move · J/K reorder · d delete · " +
-		undoHelp + " · v archive · ? help · q quit"
+		undoHelp + " · v archive · s spaces · ? help · q quit"
 	if m.showHelp {
 		help = strings.Join([]string{
 			"1-4 focus quadrant · tab/shift+tab cycle · j/k or ↑/↓ select task",
@@ -210,6 +287,9 @@ func (m Model) renderFooter() string {
 			"J/K or shift+↑/↓ reorder within quadrant · u undo last change (any frontend)",
 			"U or ctrl+r redo, until the next change discards it",
 			"d twice delete permanently · v archive view (r there restores) · ? close help · q quit",
+			"s spaces: switch matrix, or n/r/dd to add, rename, delete · ]/[ next/prev space",
+			"each space keeps its own tasks, headings, and history",
+			"space changes are not undoable, unlike changes to tasks",
 			m.mcpHelpLine(),
 		}, "\n")
 	}
@@ -256,7 +336,8 @@ func (m Model) withMCPIndicator(line string) string {
 
 func (m Model) renderArchive() string {
 	dim := lipgloss.NewStyle().Foreground(m.dimColor())
-	title := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("Archive — %d completed", len(m.data.Archive)))
+	title := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("Archive — %d completed in %s",
+		len(m.data.Archive), task.SanitizeDisplay(m.data.Space)))
 
 	// Newest completion first, matching `ike archive`.
 	arch := m.data.ListArchive()
