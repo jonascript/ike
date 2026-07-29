@@ -47,6 +47,15 @@ func newMCPCmd(open opener) *cobra.Command {
 				//nolint:staticcheck // ST1005: formatted for a human, not a caller.
 				return errors.New(mcpDisabledMsg)
 			}
+			// A --space flag scopes the whole server, so a name that is not
+			// there should fail now rather than on the agent's first tool
+			// call, where it would look like a broken tool rather than a
+			// mistyped launch command.
+			if s.Pinned() != "" {
+				if _, err := s.Load(); err != nil {
+					return err
+				}
+			}
 			// ForMCP re-checks the gate on every read and mutation, so
 			// `ike mcp disable` revokes this session even while it stays
 			// connected. The check above only covers startup.

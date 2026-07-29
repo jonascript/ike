@@ -214,6 +214,11 @@ func OpenAt(path string) *Store {
 // Path returns the data file path.
 func (s *Store) Path() string { return s.path }
 
+// Pinned returns the space this Store is pinned to, or "" if it follows the
+// file's current space. It lets a caller tell the two apart — the MCP server
+// refuses a request naming a different space than the one it was launched for.
+func (s *Store) Pinned() string { return s.space }
+
 // ForMCP returns a view of s that re-checks the access gate on every read and
 // mutation, and keeps the data file's location out of the errors it returns.
 // The caller keeps the ungated Store, so `ike mcp status` can still report the
