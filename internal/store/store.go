@@ -45,9 +45,16 @@ var lockTimeout = 5 * time.Second
 const lockRetryInterval = 25 * time.Millisecond
 
 // currentVersion is the schema version this build writes. Version 2 added
-// per-task ranks and the undo stack; version 1 files are upgraded in memory
-// on read and persisted at version 2 by the next write.
-const currentVersion = 2
+// per-task ranks and the undo stack; version 3 stopped copying the whole
+// archive into every snapshot. Older files are upgraded in memory on read and
+// persisted at the current version by the next write.
+//
+// Version 3 is a real bump rather than a field added in place — the approach
+// taken for `redo` — because the failure modes differ. Losing redo history to
+// an older binary is harmless; an older binary reading a v3 file would find no
+// "archive" in a snapshot, decode it as empty, and wipe the archive on the next
+// undo. Better that it refuse the file outright.
+const currentVersion = 3
 
 // Data is the full on-disk state.
 type Data struct {
@@ -96,10 +103,24 @@ func (l Labels) IsCustom(q task.Quadrant) bool {
 // naming the change it sits either side of — e.g. `complete "ship v2"`. On the
 // undo stack it holds the state before that change; on the redo stack, after.
 type Snapshot struct {
-	Label   string      `json:"label"`
-	Tasks   []task.Task `json:"tasks"`
-	Archive []task.Task `json:"archive"`
-	Labels  Labels      `json:"quadrant_labels,omitempty"`
+	Label  string      `json:"label"`
+	Tasks  []task.Task `json:"tasks"`
+	Labels Labels      `json:"quadrant_labels,omitempty"`
+
+	// ArchiveEntry is the one archived task that cannot be reconstructed from
+	// Tasks, and is nil for almost every snapshot.
+	//
+	// The archive is not stored here, because it does not need to be. A task is
+	// never active and archived at the same time, so restoring Tasks already says
+	// which archive entries must go: any whose ID is active again. That alone
+	// reverses a complete. Only Restore takes an entry *out* of the archive, and
+	// only its DoneAt is then unrecoverable — so only that single entry is kept.
+	//
+	// Copying the whole archive into every snapshot is what this replaces. With
+	// 1500 archived tasks and two 20-deep stacks it meant a ~21x blow-up,
+	// measured: 276K of real data became 8MB, re-marshaled on every mutation
+	// (79ms per `ike add`) and re-parsed by the TUI on every poll.
+	ArchiveEntry *task.Task `json:"archive_entry,omitempty"`
 }
 
 func emptyData() Data {
@@ -277,10 +298,23 @@ func readFile(path string) (Data, error) {
 		return Data{}, fmt.Errorf("%s has unsupported version %d (expected %d)", path, d.Version, currentVersion)
 	}
 	// Older files are upgraded in memory; the next write persists the upgrade.
+	//
+	// History from before version 3 is dropped rather than reinterpreted. Those
+	// snapshots stored a whole archive and no ArchiveEntry, so undoing a restore
+	// recorded by an older build would silently lose that entry's completion
+	// stamp. Losing undo history on a one-time upgrade is a far better outcome
+	// than quietly losing an archived task, and the tasks themselves are
+	// untouched either way.
+	if d.Version < 3 {
+		d.Undo, d.Redo = nil, nil
+	}
 	d.Version = currentVersion
 	if d.NextID < 1 {
 		d.NextID = 1
 	}
+	// Before normalizeRanks, so a task rescued from an invalid quadrant gets a
+	// rank in the quadrant it lands in.
+	clampQuadrants(&d)
 	normalizeRanks(&d)
 	return d, nil
 }

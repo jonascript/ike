@@ -96,7 +96,7 @@ func (s *Store) Restore(id int) (task.Task, Data, error) {
 			return err
 		}
 		restored = d.Archive[i]
-		pushUndo(d, fmt.Sprintf("restore %q", restored.Title))
+		pushUndoRestoringArchive(d, fmt.Sprintf("restore %q", restored.Title), d.Archive[i])
 		restored.DoneAt = nil
 		restored.Rank = maxRank(d, restored.Quadrant) + rankGap
 		d.Archive = append(d.Archive[:i], d.Archive[i+1:]...)
@@ -292,8 +292,8 @@ func (s *Store) Undo() (string, Data, error) {
 		snap := d.Undo[len(d.Undo)-1]
 		d.Undo = d.Undo[:len(d.Undo)-1]
 		// The state we are stepping away from is what Redo would restore.
-		d.Redo = trimHistory(append(d.Redo, snapshotOf(d, snap.Label)))
-		d.Tasks, d.Archive, d.Labels = snap.Tasks, snap.Archive, snap.Labels
+		d.Redo = recordSnapshot(d, d.Redo, snap.Label, snap)
+		restoreSnapshot(d, snap)
 		label = snap.Label
 		return nil
 	})
@@ -313,8 +313,8 @@ func (s *Store) Redo() (string, Data, error) {
 		d.Redo = d.Redo[:len(d.Redo)-1]
 		// recordUndo, not pushUndo: this must not clear the rest of the redo
 		// stack, or redoing several steps would strand the ones above it.
-		recordUndo(d, snap.Label)
-		d.Tasks, d.Archive, d.Labels = snap.Tasks, snap.Archive, snap.Labels
+		d.Undo = recordSnapshot(d, d.Undo, snap.Label, snap)
+		restoreSnapshot(d, snap)
 		label = snap.Label
 		return nil
 	})
@@ -351,6 +351,15 @@ func pushUndo(d *Data, label string) {
 	d.Redo = nil
 }
 
+// pushUndoRestoringArchive is pushUndo for Restore, the only mutation that takes
+// an entry out of the archive and so the only one that has to remember it.
+func pushUndoRestoringArchive(d *Data, label string, entry task.Task) {
+	snap := snapshotOf(d, label)
+	snap.ArchiveEntry = &entry
+	d.Undo = trimHistory(append(d.Undo, snap))
+	d.Redo = nil
+}
+
 // recordUndo pushes the current state onto the undo stack, leaving the redo
 // stack untouched.
 func recordUndo(d *Data, label string) {
@@ -359,11 +368,53 @@ func recordUndo(d *Data, label string) {
 
 func snapshotOf(d *Data, label string) Snapshot {
 	return Snapshot{
-		Label:   label,
-		Tasks:   slices.Clone(d.Tasks),
-		Archive: slices.Clone(d.Archive),
-		Labels:  maps.Clone(d.Labels),
+		Label:  label,
+		Tasks:  slices.Clone(d.Tasks),
+		Labels: maps.Clone(d.Labels),
 	}
+}
+
+// restoreSnapshot applies snap to d, rebuilding the archive rather than reading
+// a stored copy of it. See Snapshot.ArchiveEntry for why that is enough.
+func restoreSnapshot(d *Data, snap Snapshot) {
+	d.Tasks, d.Labels = snap.Tasks, snap.Labels
+
+	// A task is never active and archived at once, so any archive entry whose ID
+	// is active again in the restored task list has to go. That is exactly what
+	// reverses a complete, which is why completing records no archive at all.
+	active := make(map[int]bool, len(d.Tasks))
+	for _, t := range d.Tasks {
+		active[t.ID] = true
+	}
+	kept := make([]task.Task, 0, len(d.Archive))
+	for _, a := range d.Archive {
+		if !active[a.ID] {
+			kept = append(kept, a)
+		}
+	}
+	d.Archive = kept
+
+	// Put back the entry a restore took out of the archive. Its DoneAt is the one
+	// thing the task list cannot tell us.
+	if e := snap.ArchiveEntry; e != nil && !active[e.ID] {
+		d.Archive = append(d.Archive, *e)
+	}
+}
+
+// recordSnapshot pushes the current state onto stack, on the way to restoring
+// snap. Whatever restoring snap is about to drop from the archive is precisely
+// what this snapshot has to be able to put back, so stepping the other way
+// stays lossless — that is what keeps a completed task redoable.
+func recordSnapshot(d *Data, stack []Snapshot, label string, snap Snapshot) []Snapshot {
+	rec := snapshotOf(d, label)
+	for i, a := range d.Archive {
+		if slices.ContainsFunc(snap.Tasks, func(t task.Task) bool { return t.ID == a.ID }) {
+			entry := d.Archive[i]
+			rec.ArchiveEntry = &entry
+			break
+		}
+	}
+	return trimHistory(append(stack, rec))
 }
 
 // trimHistory caps a history stack, dropping the oldest entries.
@@ -402,6 +453,35 @@ func maxRank(d *Data, q task.Quadrant) float64 {
 // normalizeRanks assigns a rank to every active task that lacks one, placing
 // it after the already-ranked tasks of its quadrant in ID order. It runs on
 // every read so that data written before ranks existed still sorts stably.
+// clampQuadrants moves any task whose quadrant is outside 1-4 into Eliminate.
+//
+// Add and Move validate, so ike itself never writes one — these come from a hand
+// edit, a sync conflict, or some other writer. Left alone, such a task was
+// invisible everywhere a human looks: the TUI renders only quadrants 1-4,
+// `ike list` groups only 1-4, and normalizeRanks skipped it so it never even got
+// a rank. It still round-tripped through every write and still showed up in
+// `--json`. A task that survives every save while being mentioned nowhere is
+// worse than one in a surprising quadrant, so it is made visible instead.
+//
+// Snapshots are clamped too, so undoing into one cannot bring the problem back.
+func clampQuadrants(d *Data) {
+	fix := func(ts []task.Task) {
+		for i := range ts {
+			if !ts[i].Quadrant.Valid() {
+				ts[i].Quadrant = task.Eliminate
+			}
+		}
+	}
+	fix(d.Tasks)
+	fix(d.Archive)
+	for i := range d.Undo {
+		fix(d.Undo[i].Tasks)
+	}
+	for i := range d.Redo {
+		fix(d.Redo[i].Tasks)
+	}
+}
+
 func normalizeRanks(d *Data) {
 	for q := task.Do; q <= task.Eliminate; q++ {
 		var missing []int

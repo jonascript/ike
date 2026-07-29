@@ -42,6 +42,16 @@ tagged version.
 
 ### Fixed
 
+- Undo snapshots no longer copy the whole archive. With 1500 archived tasks the
+  data file was ~21x larger than the data in it — 276K of tasks became an 8MB
+  file, re-written on every change (79ms per `ike add`) and re-parsed by the TUI
+  on every poll. Now 1.4x and 17ms. Data file version 3; a file from an older
+  version is upgraded on read, and its undo history is dropped rather than
+  reinterpreted.
+- A task whose `quadrant` was outside 1–4 (only reachable by hand-editing the
+  file, or another writer) persisted through every save while appearing in no
+  human-facing view, though it still showed in `--json`. Such tasks are now
+  moved into quadrant 4 on read, so they are visible and can be dealt with.
 - Writes are fsynced before the atomic rename, so a crash cannot leave a
   truncated data file.
 - The previous file contents are kept as `tasks.json.bak`.
