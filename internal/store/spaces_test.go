@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -307,8 +308,14 @@ func TestRemoveSpaceRefusesNonEmptyWithoutForce(t *testing.T) {
 	if err == nil {
 		t.Fatal("removing a non-empty space without force should error")
 	}
-	if !strings.Contains(err.Error(), "1 active task") {
-		t.Errorf("error = %v, want it to say what would be lost", err)
+	// The counts come back on the error rather than baked into a sentence, so the
+	// frontend does the wording.
+	var notEmpty *NotEmptyError
+	if !errors.As(err, &notEmpty) {
+		t.Fatalf("error = %v, want a *NotEmptyError", err)
+	}
+	if notEmpty.Space.Active != 1 || notEmpty.Space.Archived != 0 {
+		t.Errorf("counts = %+v, want 1 active and 0 archived", notEmpty.Space)
 	}
 	if got := spaceNames(t, s); len(got) != 2 {
 		t.Errorf("spaces = %v, want the space kept", got)
@@ -339,8 +346,9 @@ func TestRemoveSpaceCountsTheArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = s.RemoveSpace("work", false)
-	if err == nil || !strings.Contains(err.Error(), "1 archived task") {
-		t.Errorf("error = %v, want it to mention the archived task", err)
+	var notEmpty *NotEmptyError
+	if !errors.As(err, &notEmpty) || notEmpty.Space.Archived != 1 {
+		t.Errorf("error = %v, want a *NotEmptyError counting the archived task", err)
 	}
 }
 
@@ -559,4 +567,22 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// Listing the document must not depend on resolving a space: a listing is how
+// you discover that the space you named is not there.
+func TestListSpacesWorksOnAPinnedStoreWithAMissingSpace(t *testing.T) {
+	s := spacesStore(t, "work")
+	pinned := s.InSpace("mistyped")
+
+	if _, err := pinned.Load(); err == nil {
+		t.Fatal("loading a missing space should error")
+	}
+	infos, err := pinned.ListSpaces()
+	if err != nil {
+		t.Fatalf("ListSpaces on a bad pin: %v", err)
+	}
+	if len(infos) != 2 {
+		t.Errorf("spaces = %+v, want both listed", infos)
+	}
 }

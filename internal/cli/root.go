@@ -11,6 +11,11 @@ import (
 	"github.com/jonascript/ike/internal/tui"
 )
 
+// spaceFlag is the name of the --space flag. Subcommands can only reach a
+// persistent flag by name, so the name is a constant rather than a literal in
+// each place that looks it up.
+const spaceFlag = "space"
+
 // version is stamped at build time via -ldflags "-X ...cli.version=...".
 var version = "dev"
 
@@ -75,7 +80,7 @@ func NewRootCmd(outer opener) *cobra.Command {
 			return tui.Run(s)
 		}),
 	}
-	root.PersistentFlags().StringVarP(&space, "space", "s", "",
+	root.PersistentFlags().StringVarP(&space, spaceFlag, "s", "",
 		"act on this space instead of the current one")
 	root.PersistentFlags().StringVarP(&file, "file", "f", "",
 		"use this data file instead of IKE_DATA_FILE or the default location")

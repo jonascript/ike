@@ -1,15 +1,28 @@
 package store
 
 import (
-	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
 	"github.com/jonascript/ike/internal/task"
 )
+
+// NotEmptyError reports that a space still holds tasks, and how many.
+//
+// It carries the counts rather than a finished sentence so the wording lives
+// with the rest of the frontend's wording. The store had grown two helpers to
+// phrase one error while the CLI phrased the same numbers differently a package
+// away, which is one vocabulary too many for one concept.
+type NotEmptyError struct {
+	Space SpaceInfo
+}
+
+func (e *NotEmptyError) Error() string {
+	return fmt.Sprintf("%q is not empty (%d active, %d archived)",
+		e.Space.Name, e.Space.Active, e.Space.Archived)
+}
 
 // SpaceInfo describes one space for a picker or listing. It carries counts
 // rather than tasks: a Data hands one of these back for every space in the file
@@ -104,11 +117,10 @@ func (f *File) checkNewName(name string) error {
 
 // ListSpaces describes every space in the file, sorted by name.
 func (s *Store) ListSpaces() ([]SpaceInfo, error) {
-	f, err := readFile(s.path)
+	// loadFile, not loadResolved: this describes the document, and must answer
+	// even when the space this Store is pinned to is not in it.
+	f, err := s.loadFile()
 	if err != nil {
-		return nil, s.redact(err)
-	}
-	if err := s.gate(&f); err != nil {
 		return nil, err
 	}
 	return f.spaceInfos(), nil
@@ -210,9 +222,7 @@ func (s *Store) RemoveSpace(name string, force bool) (SpaceInfo, error) {
 			Current:  canonical == f.Current,
 		}
 		if !force && (removed.Active > 0 || removed.Archived > 0) {
-			return fmt.Errorf(
-				"%q still holds %s; pass --force to delete it anyway, or rename it aside",
-				canonical, countPhrase(removed.Active, removed.Archived))
+			return &NotEmptyError{Space: removed}
 		}
 		delete(f.Spaces, canonical)
 		if f.Current == canonical {
@@ -221,140 +231,4 @@ func (s *Store) RemoveSpace(name string, force bool) (SpaceInfo, error) {
 		return nil
 	})
 	return removed, err
-}
-
-// ExportSpace writes one space to path as a standalone ike data file: a normal
-// document holding just that space, which opens with `ike --file` and imports
-// with `ike space import`.
-//
-// MCP access is deliberately left off in the exported file, whatever it is here.
-// Consent is a decision about a file on a machine, and an export exists to be
-// copied elsewhere — carrying "agents may read this" along to a machine whose
-// owner never said so would be the wrong default in the one direction that
-// matters.
-//
-// It refuses to overwrite unless force, and writes through the same atomic path
-// as any other write, so an interrupted export cannot leave a half file that
-// still looks importable.
-func (s *Store) ExportSpace(name, path string, force bool) (SpaceInfo, error) {
-	p, err := CheckPath("export path", path)
-	if err != nil {
-		return SpaceInfo{}, err
-	}
-	f, err := readFile(s.path)
-	if err != nil {
-		return SpaceInfo{}, s.redact(err)
-	}
-	if err := s.gate(&f); err != nil {
-		return SpaceInfo{}, err
-	}
-	canonical, d, err := f.resolve(name)
-	if err != nil {
-		return SpaceInfo{}, s.redact(err)
-	}
-	if !force {
-		if _, err := os.Stat(p); err == nil {
-			return SpaceInfo{}, fmt.Errorf("%s already exists; pass --force to replace it", p)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return SpaceInfo{}, err
-		}
-	}
-	out := File{
-		Version: currentVersion,
-		Current: canonical,
-		Spaces:  map[string]*Data{canonical: d},
-	}
-	if err := writeFileAtomic(p, out); err != nil {
-		return SpaceInfo{}, err
-	}
-	return SpaceInfo{
-		Name:     canonical,
-		Active:   len(d.Tasks),
-		Archived: len(d.Archive),
-	}, nil
-}
-
-// ImportSpaces copies spaces out of another ike data file into this one.
-//
-// By default it takes that file's current space; all takes every space in it.
-// A name already in use is an error rather than a merge — combining two
-// matrices would have to reconcile two ID sequences and two histories, and
-// silently interleaving someone's work is worse than asking them to pick a
-// name. as renames a single imported space on the way in.
-//
-// Task IDs need no renumbering: next_id belongs to the space and travels with
-// it. MCP access is never carried in, for the same reason export never writes
-// it out.
-func (s *Store) ImportSpaces(path, as string, all bool) ([]SpaceInfo, error) {
-	p, err := CheckPath("import path", path)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(p); err != nil {
-		return nil, err
-	}
-	src, err := readFile(p)
-	if err != nil {
-		return nil, err
-	}
-	as = strings.TrimSpace(as)
-	if all && as != "" {
-		return nil, errors.New("--as renames a single space; it cannot be combined with --all")
-	}
-
-	// Which spaces to take, in a stable order so the report reads the same way
-	// twice and a partial failure is reproducible.
-	take := []string{src.Current}
-	if all {
-		take = slices.Sorted(maps.Keys(src.Spaces))
-	}
-
-	var imported []SpaceInfo
-	_, err = s.mutateFile(func(f *File) error {
-		imported = nil
-		for _, from := range take {
-			d, ok := src.Spaces[from]
-			if !ok {
-				return fmt.Errorf("%s has no space named %q", p, from)
-			}
-			to := from
-			if as != "" {
-				to = as
-			}
-			if err := f.checkNewName(to); err != nil {
-				return err
-			}
-			copied := *d
-			f.Spaces[to] = &copied
-			imported = append(imported, SpaceInfo{
-				Name:     to,
-				Active:   len(copied.Tasks),
-				Archived: len(copied.Archive),
-			})
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return imported, nil
-}
-
-// countPhrase describes a space's contents for a message about losing them.
-func countPhrase(active, archived int) string {
-	switch {
-	case active > 0 && archived > 0:
-		return fmt.Sprintf("%s and %s", plural(active, "active task"), plural(archived, "archived task"))
-	case archived > 0:
-		return plural(archived, "archived task")
-	default:
-		return plural(active, "active task")
-	}
-}
-
-func plural(n int, noun string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, noun)
-	}
-	return fmt.Sprintf("%d %ss", n, noun)
 }

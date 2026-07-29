@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -104,11 +105,19 @@ func newSpaceImportCmd(open opener) *cobra.Command {
 	return cmd
 }
 
+// spaceFlagged reports whether --space was given. The flag is looked up by name
+// because a persistent flag is only reachable that way from a subcommand, so the
+// name is spelled once here rather than at each place that asks.
+func spaceFlagged(cmd *cobra.Command) bool {
+	f := cmd.Flags().Lookup(spaceFlag)
+	return f != nil && f.Changed
+}
+
 // rejectSpaceFlag stops a space command from being given --space, which would
 // name a target twice and in two different ways.
 func rejectSpaceFlag(cmd *cobra.Command) error {
-	if f := cmd.Flags().Lookup("space"); f != nil && f.Changed {
-		return fmt.Errorf("`ike space %s` takes the space as an argument; drop --space", cmd.Name())
+	if spaceFlagged(cmd) {
+		return fmt.Errorf("`ike space %s` takes the space as an argument; drop --%s", cmd.Name(), spaceFlag)
 	}
 	return nil
 }
@@ -165,12 +174,32 @@ func spaceSummary(spaces []store.SpaceInfo) string {
 	return strings.Join(names, ", ")
 }
 
-// spaceCounts describes what a space holds, for a listing.
+// spaceCounts describes what a space holds as a listing column.
 func spaceCounts(sp store.SpaceInfo) string {
 	if sp.Archived == 0 {
 		return fmt.Sprintf("%d active", sp.Active)
 	}
 	return fmt.Sprintf("%d active, %d archived", sp.Active, sp.Archived)
+}
+
+// spaceHolds describes the same counts as a clause, for a sentence about losing
+// them. A column can drop the noun; a sentence cannot.
+func spaceHolds(sp store.SpaceInfo) string {
+	switch {
+	case sp.Active > 0 && sp.Archived > 0:
+		return fmt.Sprintf("%s and %s", plural(sp.Active, "active task"), plural(sp.Archived, "archived task"))
+	case sp.Archived > 0:
+		return plural(sp.Archived, "archived task")
+	default:
+		return plural(sp.Active, "active task")
+	}
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func newSpaceNewCmd(open opener) *cobra.Command {
@@ -248,6 +277,11 @@ func newSpaceRmCmd(open opener) *cobra.Command {
 				return err
 			}
 			removed, err := s.RemoveSpace(args[0], force)
+			var notEmpty *store.NotEmptyError
+			if errors.As(err, &notEmpty) {
+				return fmt.Errorf("%q still holds %s; pass --force to delete it anyway, or rename it aside",
+					task.SanitizeDisplay(notEmpty.Space.Name), spaceHolds(notEmpty.Space))
+			}
 			if err != nil {
 				return err
 			}

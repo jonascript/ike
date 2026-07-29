@@ -37,7 +37,7 @@ func parseQuadrant(s string) (task.Quadrant, error) {
 // alternative, and it makes `ike -s mistyped done 3` indistinguishable from the
 // command you meant.
 func inSpace(cmd *cobra.Command, d store.Data) string {
-	if f := cmd.Flags().Lookup("space"); f == nil || !f.Changed {
+	if !spaceFlagged(cmd) {
 		return ""
 	}
 	return " in " + task.SanitizeDisplay(d.Space)

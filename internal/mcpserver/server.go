@@ -156,18 +156,28 @@ type spacesOut struct {
 	Spaces []spaceOut `json:"spaces"`
 }
 
+// withinPin reports whether a space is inside this server's scope.
+//
+// A server launched with an explicit space is a hard pin, and the pin bounds
+// what the agent can *see* as well as what it can write — so both the tool
+// dispatch and the space listing ask this one question rather than each
+// re-deriving it.
+func withinPin(s *store.Store, name string) bool {
+	pin := s.Pinned()
+	return pin == "" || strings.EqualFold(pin, name)
+}
+
 // spaceStore picks the store a tool call acts on.
 //
-// A server launched with an explicit space is a hard pin: a request naming a
-// different one is refused rather than honored. The user scoped this server to
-// one matrix, and an agent reaching outside it would defeat the point of having
-// said so.
+// The user scoped this server to one matrix, and an agent reaching outside it
+// would defeat the point of having said so, so a request naming a different
+// space is refused rather than honored.
 func spaceStore(s *store.Store, want string) (*store.Store, error) {
 	if want == "" {
 		return s, nil
 	}
-	if pin := s.Pinned(); pin != "" && !strings.EqualFold(pin, want) {
-		return nil, fmt.Errorf("this server is limited to the %q space and cannot act on %q", pin, want)
+	if !withinPin(s, want) {
+		return nil, fmt.Errorf("this server is limited to the %q space and cannot act on %q", s.Pinned(), want)
 	}
 	return s.InSpace(want), nil
 }
@@ -370,9 +380,8 @@ func NewServer(s *store.Store, version string) *mcp.Server {
 		}
 		out := spacesOut{Spaces: make([]spaceOut, 0, len(spaces))}
 		for _, sp := range spaces {
-			// A server pinned to one space reports only that one: the pin is
-			// meant to scope what the agent can see, not just what it can write.
-			if pin := s.Pinned(); pin != "" && !strings.EqualFold(pin, sp.Name) {
+			// A server pinned to one space reports only that one.
+			if !withinPin(s, sp.Name) {
 				continue
 			}
 			out.Spaces = append(out.Spaces, spaceOut{

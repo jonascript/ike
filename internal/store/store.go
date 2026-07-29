@@ -306,18 +306,48 @@ func (s *Store) ModTime() (mtime int64, err error) {
 
 // Load reads this Store's space without taking the write lock.
 func (s *Store) Load() (Data, error) {
-	f, err := readFile(s.path)
+	f, name, d, err := s.loadResolved(s.space)
 	if err != nil {
-		return Data{}, s.redact(err)
-	}
-	if err := s.gate(&f); err != nil {
 		return Data{}, err
 	}
-	name, d, err := f.resolve(s.space)
-	if err != nil {
-		return Data{}, s.redact(err)
-	}
 	return f.dataFor(name, d), nil
+}
+
+// loadFile reads the document and checks the gate — everything a read does
+// before it needs to know which space it is about.
+//
+// Operations that describe the file rather than a matrix stop here. Listing the
+// spaces must keep working when the pinned one does not exist, since a listing
+// is how you find that out.
+func (s *Store) loadFile() (File, error) {
+	f, err := readFile(s.path)
+	if err != nil {
+		return File{}, s.redact(err)
+	}
+	if err := s.gate(&f); err != nil {
+		return File{}, err
+	}
+	return f, nil
+}
+
+// loadResolved is loadFile plus one resolved space, returned alongside the
+// document so a caller can use both.
+//
+// It exists so this ordering has one implementation. The gate runs before
+// resolution deliberately — a revoked client must be told access is off rather
+// than whether the space it named exists — and that ordering was previously
+// retyped in each read path, where a second copy could drift with nothing to
+// catch it.
+func (s *Store) loadResolved(space string) (File, string, *Data, error) {
+	f, err := s.loadFile()
+	if err != nil {
+		return File{}, "", nil, err
+	}
+	name, d, err := f.resolve(space)
+	if err != nil {
+		return File{}, "", nil, s.redact(err)
+	}
+	return f, name, d, nil
 }
 
 // Mutate applies fn to a freshly-read copy of this Store's space under an
