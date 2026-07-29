@@ -2,8 +2,10 @@ package store
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -196,10 +198,11 @@ func TestConcurrentWriters(t *testing.T) {
 	}
 }
 
-func TestFileFormat(t *testing.T) {
-	s := testStore(t)
-	s.Add("x", task.Do)
-	b, err := os.ReadFile(s.Path())
+// rawFile decodes the data file as plain JSON, for assertions about the shape
+// on disk rather than the shape in memory.
+func rawFile(t *testing.T, path string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,9 +210,155 @@ func TestFileFormat(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"version", "next_id", "tasks"} {
+	return m
+}
+
+// onDiskVersion reports the schema version the file currently carries.
+func onDiskVersion(t *testing.T, path string) int {
+	t.Helper()
+	v, ok := rawFile(t, path)["version"].(float64)
+	if !ok {
+		t.Fatalf("%s has no version", path)
+	}
+	return int(v)
+}
+
+// rawSpace returns one space's body from the file on disk.
+func rawSpace(t *testing.T, path, name string) map[string]any {
+	t.Helper()
+	spaces, ok := rawFile(t, path)["spaces"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s has no spaces object", path)
+	}
+	body, ok := spaces[name].(map[string]any)
+	if !ok {
+		t.Fatalf("%s has no space %q (spaces: %v)", path, name, slices.Sorted(maps.Keys(spaces)))
+	}
+	return body
+}
+
+func TestFileFormat(t *testing.T) {
+	s := testStore(t)
+	s.Add("x", task.Do)
+
+	m := rawFile(t, s.Path())
+	for _, k := range []string{"version", "current", "spaces"} {
 		if _, ok := m[k]; !ok {
-			t.Errorf("file missing key %q", k)
+			t.Errorf("file missing top-level key %q", k)
 		}
+	}
+	// The matrix itself sits one level down, under its space.
+	body := rawSpace(t, s.Path(), defaultSpace)
+	for _, k := range []string{"next_id", "tasks"} {
+		if _, ok := body[k]; !ok {
+			t.Errorf("space missing key %q", k)
+		}
+	}
+	// The fields derived from the document on every read describe the file, not
+	// the matrix, and must never be written into a space.
+	for _, k := range []string{"space", "spaces", "mcp_enabled", "version"} {
+		if _, ok := body[k]; ok {
+			t.Errorf("space should not persist key %q", k)
+		}
+	}
+}
+
+// A file from before spaces existed becomes a single-space file, and nothing in
+// it is lost on the way.
+func TestUpgradesSingleMatrixFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	v3 := `{
+	  "version": 3,
+	  "next_id": 7,
+	  "tasks": [{"id": 1, "title": "active", "quadrant": 1, "rank": 1024}],
+	  "archive": [{"id": 2, "title": "done", "quadrant": 2, "done_at": "2026-07-01T10:00:00Z"}],
+	  "quadrant_labels": {"1": "Firefighting"},
+	  "undo": [{"label": "add \"active\"", "tasks": []}],
+	  "mcp_enabled": true
+	}`
+	if err := os.WriteFile(path, []byte(v3), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := OpenAt(path)
+
+	d, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Space != defaultSpace {
+		t.Errorf("space = %q, want %q", d.Space, defaultSpace)
+	}
+	if d.NextID != 7 {
+		t.Errorf("next_id = %d, want 7 preserved", d.NextID)
+	}
+	if len(d.Tasks) != 1 || len(d.Archive) != 1 {
+		t.Errorf("tasks = %d, archive = %d, want 1 and 1", len(d.Tasks), len(d.Archive))
+	}
+	if got := d.Labels.Of(task.Do); got != "Firefighting" {
+		t.Errorf("label = %q, want the rename preserved", got)
+	}
+	// v3 history is still readable, unlike v2's, so it survives the upgrade.
+	if len(d.Undo) != 1 {
+		t.Errorf("undo = %d, want 1 preserved", len(d.Undo))
+	}
+	if !d.MCPAllowed {
+		t.Error("mcp_enabled should survive the upgrade")
+	}
+
+	// Writing persists the new shape, and the gate lands on the document rather
+	// than inside the space.
+	if _, _, err := s.Add("after", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if v := onDiskVersion(t, path); v != currentVersion {
+		t.Errorf("on-disk version = %d, want %d", v, currentVersion)
+	}
+	if enabled, _ := rawFile(t, path)["mcp_enabled"].(bool); !enabled {
+		t.Error("mcp_enabled should be a document-level key after the upgrade")
+	}
+}
+
+// A v4 file with no spaces is a truncated or hand-mangled file, not an empty
+// matrix. Accepting it would mean the next write erased whatever was there.
+func TestVersionFourWithNoSpacesIsAnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	for _, body := range []string{
+		`{"version": 4}`,
+		`{"version": 4, "spaces": {}}`,
+		`{"version": 4, "current": "default", "spaces": {"default": null}}`,
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := OpenAt(path).Load(); err == nil {
+			t.Errorf("%s should not load", body)
+		}
+	}
+}
+
+// A current that names nothing is repaired on read rather than breaking every
+// command, but an explicitly requested missing space still fails.
+func TestDanglingCurrentIsRepairedOnRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	body := `{
+	  "version": 4,
+	  "current": "gone",
+	  "spaces": {
+	    "work": {"next_id": 1, "tasks": []},
+	    "home": {"next_id": 1, "tasks": []}
+	  }
+	}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := OpenAt(path).Load()
+	if err != nil {
+		t.Fatalf("a dangling current should be repaired, not fatal: %v", err)
+	}
+	if d.Space != "home" {
+		t.Errorf("space = %q, want the alphabetically first survivor %q", d.Space, "home")
+	}
+	if _, err := OpenAt(path).InSpace("gone").Load(); err == nil {
+		t.Error("an explicitly requested missing space should still error")
 	}
 }

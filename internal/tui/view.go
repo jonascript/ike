@@ -229,7 +229,7 @@ func (m Model) renderFooter() string {
 // mcpHelpLine states the current MCP access setting and the command that
 // changes it. It names the marker so the footer symbol is self-explaining.
 func (m Model) mcpHelpLine() string {
-	if m.data.MCPEnabled {
+	if m.data.MCPAllowed {
 		return mcpIndicator + " AI agents can manage this matrix over MCP · turn off with: ike mcp disable"
 	}
 	return "AI agent access (MCP) is off · turn on with: ike mcp enable"
@@ -242,7 +242,7 @@ const mcpIndicator = "◆ mcp"
 // withMCPIndicator right-aligns the indicator on a footer line, if access is
 // on and the line has room for it. Too narrow, and the status text wins.
 func (m Model) withMCPIndicator(line string) string {
-	if !m.data.MCPEnabled {
+	if !m.data.MCPAllowed {
 		return line
 	}
 	used := ansi.StringWidth(line)

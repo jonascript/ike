@@ -324,8 +324,8 @@ func TestUpgradeFromV2DropsHistoryButKeepsTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Version != currentVersion {
-		t.Errorf("version = %d, want %d after upgrade", d.Version, currentVersion)
+	if d.Space != defaultSpace {
+		t.Errorf("space = %q, want the upgraded matrix in %q", d.Space, defaultSpace)
 	}
 	if len(d.Tasks) != 1 || d.Tasks[0].Title != "active" {
 		t.Errorf("tasks = %+v, want the active task preserved", d.Tasks)
@@ -344,6 +344,9 @@ func TestUpgradeFromV2DropsHistoryButKeepsTasks(t *testing.T) {
 	// The upgrade persists, and normal operation resumes.
 	if _, _, err := s.Add("post upgrade", task.Do); err != nil {
 		t.Fatal(err)
+	}
+	if v := onDiskVersion(t, path); v != currentVersion {
+		t.Errorf("on-disk version = %d, want %d after the upgrade is written", v, currentVersion)
 	}
 	if _, _, err := s.Undo(); err != nil {
 		t.Errorf("undo of a post-upgrade change: %v", err)
