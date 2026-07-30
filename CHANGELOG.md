@@ -6,8 +6,11 @@ All notable changes to ike are recorded here. The format follows
 
 ## [Unreleased]
 
-Nothing released yet. The entries below describe what will be in the first
-tagged version.
+Nothing yet.
+
+## [0.1.0] - 2026-07-29
+
+First release.
 
 ### Added
 
@@ -94,4 +97,5 @@ tagged version.
 - The TUI needs one more row than before (12 rather than 10), for the line that
   names the current space.
 
-[Unreleased]: https://github.com/jonascript/ike/commits/main
+[Unreleased]: https://github.com/jonascript/ike/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/jonascript/ike/releases/tag/v0.1.0
