@@ -39,6 +39,22 @@ class Ike < Formula
     # The data file must not be readable by other users on the machine.
     assert_equal "100600", (testpath/"tasks.json").stat.mode.to_s(8)
 
+    # Spaces: one file holds several independent matrices. Verified against a
+    # real build before being asserted here — `brew test` is the only check that
+    # runs the installed artifact rather than the source tree, so a broken
+    # subcommand registration would otherwise reach users unnoticed.
+    system bin/"ike", "space", "new", "work"
+    system bin/"ike", "add", "in the work space", "-s", "work", "-q", "2"
+    assert_match "work", shell_output("#{bin}/ike space")
+    assert_match "in the work space", shell_output("#{bin}/ike list -s work")
+    # Independence is the point of a space, so the default must not see it.
+    refute_match "in the work space", shell_output("#{bin}/ike list")
+
+    # An export is a standalone data file, so --file opens it directly.
+    system bin/"ike", "space", "export", "work", testpath/"work.json"
+    assert_match "in the work space",
+      shell_output("#{bin}/ike --file #{testpath}/work.json list")
+
     # Agent access is off by default, so the MCP server must refuse to start.
     output = shell_output("#{bin}/ike mcp 2>&1", 1)
     assert_match "MCP access is off", output
