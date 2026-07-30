@@ -6,6 +6,13 @@
 
 <p align="center"><em>The Eisenhower matrix, in your terminal.</em></p>
 
+<p align="center">
+  <a href="https://github.com/jonascript/ike/actions/workflows/ci.yml"><img src="https://github.com/jonascript/ike/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/jonascript/ike/releases/latest"><img src="https://img.shields.io/github/v/release/jonascript/ike" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/jonascript/ike" alt="MIT licensed"></a>
+  <img src="https://img.shields.io/github/go-mod/go-version/jonascript/ike" alt="Minimum Go version">
+</p>
+
 ---
 
 An Eisenhower matrix task manager, named for the president who popularized the
@@ -86,7 +93,14 @@ Importing a name that is already in use is an error rather than a merge — use
 
 ## Install
 
-Requires Go 1.25+.
+```sh
+brew install jonascript/tap/ike
+```
+
+The formula builds from source, so Homebrew fetches Go for the build. Linux and
+macOS, Intel and Apple silicon.
+
+Or with Go 1.25+:
 
 ```sh
 go install github.com/jonascript/ike@latest
@@ -96,6 +110,24 @@ Or from a checkout, with a stamped version:
 
 ```sh
 go build -ldflags "-X github.com/jonascript/ike/internal/cli.version=$(git describe --tags --always)" -o ike .
+```
+
+### Prebuilt archives
+
+Every [release](https://github.com/jonascript/ike/releases) attaches archives
+for macOS and Linux on both architectures. They are **not** code-signed, so
+verify what you download — against `checksums.txt`:
+
+```sh
+shasum -a 256 -c checksums.txt --ignore-missing
+```
+
+and, if you have the GitHub CLI, against the build provenance ike publishes,
+which proves the archive was built by this repository's release workflow from
+the tag it claims:
+
+```sh
+gh attestation verify ike_0.1.0_darwin_arm64.tar.gz --repo jonascript/ike
 ```
 
 ## TUI
