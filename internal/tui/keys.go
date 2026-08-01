@@ -37,6 +37,14 @@ type keyMap struct {
 	// File keys. OpenFile is live only inside the file picker.
 	Files    key.Binding
 	OpenFile key.Binding
+
+	// Delegation keys. Plan opens the attached plan, DraftPlan asks an agent
+	// for one, and Agent hands the task over — or reattaches to a live run.
+	// They are capitals so the lowercase letters stay free, and so neither sits
+	// next to `d` for delete.
+	Plan      key.Binding
+	DraftPlan key.Binding
+	Agent     key.Binding
 }
 
 var keys = keyMap{
@@ -70,4 +78,8 @@ var keys = keyMap{
 
 	Files:    key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "files")),
 	OpenFile: key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open a path")),
+
+	Plan:      key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "plan")),
+	DraftPlan: key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "draft a plan")),
+	Agent:     key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "delegate")),
 }

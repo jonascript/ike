@@ -70,6 +70,7 @@ func (f *File) dataFor(name string, d *Data) Data {
 	out.Space = name
 	out.AllSpaces = f.spaceInfos()
 	out.MCPAllowed = f.MCPEnabled
+	out.AgentAllowed = f.AgentEnabled
 	return out
 }
 

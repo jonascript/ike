@@ -542,10 +542,21 @@ func TestListViewsFitTheTerminal(t *testing.T) {
 	m.recent = store.LoadRecent().Paths
 	m.refreshFromStore(t)
 
+	// The run and plan views are the fourth and fifth lists, and go through the
+	// same renderList — which is the point: a new list must not grow another
+	// copy of the scroll-window arithmetic.
+	m.run = &run{taskID: 1, title: "a task", lines: make([]string, 200)}
+	for i := range m.run.lines {
+		m.run.lines[i] = fmt.Sprintf("transcript line %d", i)
+	}
+	m.run.cursor = len(m.run.lines) - 1
+	m.planTask, m.planLines = 1, m.run.lines
+
 	for _, mode := range []struct {
 		name string
 		m    mode
-	}{{"archive", modeArchive}, {"spaces", modeSpaces}, {"files", modeFiles}} {
+	}{{"archive", modeArchive}, {"spaces", modeSpaces}, {"files", modeFiles},
+		{"run", modeRun}, {"plan", modePlan}} {
 		m.mode = mode.m
 		for _, h := range []int{minHeight, 13, 16, 24, 40} {
 			m.width, m.height = 100, h

@@ -10,6 +10,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/jonascript/ike/internal/agent"
 	"github.com/jonascript/ike/internal/store"
 	"github.com/jonascript/ike/internal/task"
 )
@@ -23,6 +24,8 @@ const (
 	modeArchive
 	modeSpaces
 	modeFiles
+	modeRun
+	modePlan
 )
 
 // inputPurpose says what the shared text input is currently collecting.
@@ -74,6 +77,15 @@ type Model struct {
 	fileCursor    int
 	recent        []string // data files opened before, most recent first
 	showHelp      bool
+
+	// run is the one agent run the TUI allows at a time, or nil. It outlives
+	// the run view: detaching with esc leaves it here still accumulating.
+	run    *run
+	runSeq int // identifies a run, so a canceled one's late events are ignored
+
+	planTask   int
+	planCursor int
+	planLines  []string
 
 	status  string
 	loadErr string
@@ -254,6 +266,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
+	// Agent messages arrive whether or not the run view is on screen, since a
+	// detached run keeps streaming into the model.
+	if next, cmd, handled := m.handleAgentMsg(msg); handled {
+		return next, cmd
+	}
 	return m, nil
 }
 
@@ -269,6 +286,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleSpacesKey(msg)
 	case modeFiles:
 		return m.handleFilesKey(msg)
+	case modeRun:
+		return m.handleRunKey(msg)
+	case modePlan:
+		return m.handlePlanKey(msg)
 	}
 	return m.handleNormalKey(msg)
 }
@@ -311,6 +332,12 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, keys.Quit):
+		// A live run dies with the process, so it is stopped deliberately here
+		// rather than being orphaned by the exit. The agent has its own process
+		// group and would otherwise outlive ike with nothing reading it.
+		if m.run != nil {
+			m.run.stop()
+		}
 		return m, tea.Quit
 
 	case key.Matches(msg, keys.Quadrant):
@@ -400,6 +427,23 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.PrevSpace):
 		m.cycleSpace(-1)
+
+	case key.Matches(msg, keys.Plan):
+		m.openPlan()
+
+	case key.Matches(msg, keys.DraftPlan):
+		return m, m.startAgent(agent.ModePlan)
+
+	case key.Matches(msg, keys.Agent):
+		// Reattach if a run is already going, rather than refusing: D is the
+		// key you press when you want to know what the agent is doing, and
+		// having it do nothing while a run is live would be the wrong answer.
+		if m.run != nil && !m.run.done {
+			m.mode = modeRun
+			m.status = ""
+			return m, nil
+		}
+		return m, m.startAgent(agent.ModeExecute)
 
 	case key.Matches(msg, keys.Help):
 		m.showHelp = !m.showHelp

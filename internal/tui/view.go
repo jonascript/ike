@@ -83,6 +83,12 @@ func (m Model) render() string {
 	if m.mode == modeFiles {
 		return m.renderFiles()
 	}
+	if m.mode == modeRun {
+		return m.renderRun()
+	}
+	if m.mode == modePlan {
+		return m.renderPlan()
+	}
 
 	footer := m.renderFooter()
 	footerH := lipgloss.Height(footer)
@@ -264,7 +270,10 @@ func (m Model) renderTaskLines(q task.Quadrant, w, visible int, focused bool) []
 	for i := offset; i < len(tasks) && i-offset < visible; i++ {
 		t := tasks[i]
 		marker := "  "
-		title := ansi.Truncate(t.DisplayTitle(), max(w-8, 4), "…")
+		// The delegation mark sits after the title so it cannot push the ID
+		// column around, and is one cell wide so a row's width is unchanged.
+		mark := m.taskMark(t)
+		title := ansi.Truncate(t.DisplayTitle(), max(w-8-len([]rune(mark)), 4), "…") + mark
 		line := fmt.Sprintf("%s%s %s", marker, idStyle.Render(fmt.Sprintf("%3d", t.ID)), title)
 		if focused && i == m.cursor[q] {
 			line = selStyle.Render(fmt.Sprintf("▸ %3d %s", t.ID, title))
@@ -275,6 +284,29 @@ func (m Model) renderTaskLines(q task.Quadrant, w, visible int, focused bool) []
 		lines = append(lines, idStyle.Render(fmt.Sprintf("  … %d more", len(tasks)-offset-visible)))
 	}
 	return lines
+}
+
+// Delegation marks. A task can be planned, and one task at a time can have a
+// run going; the running mark wins, since it is the more immediate fact.
+const (
+	planMark = " ✎"
+	runMark  = " ⣾"
+)
+
+// taskMark is the delegation marker for a row, or "" for a task with neither.
+//
+// Rendered from PlanAt on the task rather than by looking for the plan file,
+// which is the whole reason that stamp is persisted: the matrix redraws on
+// every keypress and a stat per row per frame would be a poor trade for a
+// symbol.
+func (m Model) taskMark(t task.Task) string {
+	if m.run != nil && !m.run.done && m.run.taskID == t.ID {
+		return runMark
+	}
+	if t.HasPlan() {
+		return planMark
+	}
+	return ""
 }
 
 func (m Model) renderFooter() string {
@@ -313,7 +345,7 @@ func (m Model) renderFooter() string {
 		undoHelp = "u undo · U redo"
 	}
 	help := "a add · e edit · x done · m move · J/K reorder · d delete · " +
-		undoHelp + " · v archive · s spaces · ? help · q quit"
+		undoHelp + " · v archive · s spaces · p plan · D delegate · ? help · q quit"
 	if m.showHelp {
 		help = strings.Join([]string{
 			"1-4 focus quadrant · tab/shift+tab cycle · j/k or ↑/↓ select task",
@@ -326,6 +358,10 @@ func (m Model) renderFooter() string {
 			"each space keeps its own tasks, headings, and history",
 			"space changes are not undoable, unlike changes to tasks",
 			"f data files: switch to another matrix file, or o to type a path",
+			"p show the attached plan (" + strings.TrimSpace(planMark) + " marks a task that has one) · P draft one with an agent",
+			"D delegate: run an agent on the task, or reattach to a run already going",
+			"in a run: esc detaches and it keeps going · ctrl+c stops it · quitting ike stops it",
+			m.agentHelpLine(),
 			m.mcpHelpLine(),
 		}, "\n")
 	}
@@ -340,6 +376,15 @@ func (m Model) renderFooter() string {
 		statusLine = m.withMCPIndicator(statusLine)
 	}
 	return strings.Join(append([]string{statusLine}, helpLines...), "\n")
+}
+
+// agentHelpLine states whether ike may run an agent, and the command that
+// changes it — the delegation counterpart of mcpHelpLine.
+func (m Model) agentHelpLine() string {
+	if m.data.AgentAllowed {
+		return "delegation is on: D runs an agent on a task · turn off with: ike agent disable"
+	}
+	return "delegation is off · turn on with: ike agent enable (p and P still work; planning is read-only)"
 }
 
 // mcpHelpLine states the current MCP access setting and the command that

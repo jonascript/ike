@@ -120,6 +120,13 @@ type Data struct {
 	// still report success, and persist nothing. The rename makes it a
 	// compile error instead of a silent no-op.
 	MCPAllowed bool `json:"-"`
+	// AgentAllowed reports whether delegation is on for the whole file. It is
+	// named apart from File.AgentEnabled for the same reason MCPAllowed is.
+	//
+	// Display only: a frontend renders the ambient marker from it, but the
+	// decision to actually start a run reads the flag fresh, so `ike agent
+	// disable` in another terminal takes effect without waiting for a poll.
+	AgentAllowed bool `json:"-"`
 }
 
 // Labels holds user-chosen names for quadrants. It is sparse: only quadrants
