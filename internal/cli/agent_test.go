@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -21,6 +22,7 @@ const (
 	helperExit    = "IKE_CLI_TEST_EXIT"
 	helperArgs    = "IKE_CLI_TEST_ARGS"
 	helperCwd     = "IKE_CLI_TEST_CWD"
+	helperDraft   = "IKE_CLI_TEST_DRAFT"
 )
 
 func TestMain(m *testing.M) {
@@ -35,6 +37,19 @@ func TestMain(m *testing.M) {
 	if p := os.Getenv(helperCwd); p != "" {
 		cwd, _ := os.Getwd()
 		_ = os.WriteFile(p, []byte(cwd), 0o600)
+	}
+	// Stand in for an interactive session that agreed on a plan: write it to
+	// the draft path ike named in the opening brief, the way a real agent
+	// would, so the handoff is exercised end to end. Finding the path by
+	// reading it back out of the prompt also checks that the brief really names
+	// somewhere ike looks.
+	if body := os.Getenv(helperDraft); body != "" {
+		re := regexp.MustCompile(`\S+\.draft\.md`)
+		for _, a := range os.Args[1:] {
+			if path := re.FindString(a); path != "" {
+				_ = os.WriteFile(path, []byte(body), 0o600)
+			}
+		}
 	}
 	if f := os.Getenv(helperFixture); f != "" {
 		b, err := os.ReadFile(f)
@@ -463,6 +478,99 @@ func writeTemp(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// The conversation is a property of the task: the first visit pins a session,
+// and every later one resumes it rather than briefing a new agent.
+func TestInteractiveSessionIsPinnedThenResumed(t *testing.T) {
+	p := scratch(t)
+	dir := t.TempDir()
+	mustRunCLI(t, p, "add", "ship v2", "-q", "1")
+	fakeStream(t)
+	argsFile := filepath.Join(t.TempDir(), "args")
+	t.Setenv(helperArgs, argsFile)
+
+	mustRunCLI(t, p, "plan", "1", "-i", "--dir", dir)
+
+	d, err := store.OpenAt(p).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := d.Tasks[0].SessionID
+	if sid == "" {
+		t.Fatal("the first visit should pin a session; without one it is unresumable")
+	}
+	first := readArgs(t, argsFile)
+	if !strings.Contains(first, "--session-id "+sid) {
+		t.Errorf("first visit args = %q, want the pinned id", first)
+	}
+	if !strings.Contains(first, "ship v2") {
+		t.Error("the first visit should carry the opening brief")
+	}
+
+	// Second visit: same conversation, no repeated brief.
+	mustRunCLI(t, p, "plan", "1", "-i")
+	again := readArgs(t, argsFile)
+	if !strings.Contains(again, "--resume "+sid) {
+		t.Errorf("second visit args = %q, want it to resume", again)
+	}
+	if strings.Contains(again, "ship v2") {
+		t.Errorf("a resumed session should not repeat the brief: %q", again)
+	}
+
+	// The stored ID does not drift.
+	d, _ = store.OpenAt(p).Load()
+	if d.Tasks[0].SessionID != sid {
+		t.Error("resuming changed the task's session")
+	}
+
+	// --new-session starts over deliberately.
+	mustRunCLI(t, p, "plan", "1", "-i", "--new-session")
+	d, _ = store.OpenAt(p).Load()
+	if d.Tasks[0].SessionID == sid {
+		t.Error("--new-session should have started a different conversation")
+	}
+}
+
+// A plan agreed in conversation is attached when you come back, which is what
+// makes the session part of ike rather than just a shell-out.
+func TestInteractiveSessionAdoptsTheAgreedPlan(t *testing.T) {
+	p := scratch(t)
+	dir := t.TempDir()
+	mustRunCLI(t, p, "add", "ship v2", "-q", "1")
+	fakeStream(t)
+	t.Setenv(helperDraft, "## Agreed\n\nDo the thing.\n")
+
+	out := mustRunCLI(t, p, "plan", "1", "-i", "--dir", dir)
+	if !strings.Contains(out, "attached the plan you agreed on") {
+		t.Errorf("out = %q, want the adopted plan reported", out)
+	}
+	if got := mustRunCLI(t, p, "plan", "1", "--show"); !strings.Contains(got, "Do the thing.") {
+		t.Errorf("--show = %q", got)
+	}
+
+	// Consumed, so a later session that agrees on nothing does not re-adopt it.
+	t.Setenv(helperDraft, "")
+	mustRunCLI(t, p, "plan", "1", "--clear")
+	mustRunCLI(t, p, "plan", "1", "-i")
+	if _, err := runCLI(t, p, "plan", "1", "--show"); err == nil {
+		t.Error("a stale draft was adopted a second time")
+	}
+}
+
+// Supervising still needs permission — being present does not remove the
+// decision to let ike start an agent that edits files.
+func TestInteractiveDelegateStillNeedsTheGate(t *testing.T) {
+	p := scratch(t)
+	dir := t.TempDir()
+	mustRunCLI(t, p, "add", "ship v2", "-q", "1")
+	fakeStream(t)
+
+	if _, err := runCLI(t, p, "delegate", "1", "-i", "--dir", dir); err == nil {
+		t.Fatal("an interactive delegate should be refused with the gate off")
+	}
+	mustRunCLI(t, p, "agent", "enable")
+	mustRunCLI(t, p, "delegate", "1", "-i", "--dir", dir)
 }
 
 // --plan-first chains the two runs, so one command drafts and then acts.

@@ -174,6 +174,99 @@ func (s *Store) SetDir(id int, source, dir string) (task.Task, Data, error) {
 	return out, d, err
 }
 
+// PlanDraftPath is where an interactive agent session is told to leave the plan
+// it agreed with you, for AdoptPlanDraft to pick up.
+//
+// It sits beside the plan itself and is stable per task, which is what makes it
+// usable across sessions: the instruction naming it is in the conversation's
+// history, so a session resumed next week still writes to somewhere ike looks.
+// A temp path would have gone stale the moment the first session ended.
+//
+// A draft rather than the plan file directly, because the store is the only
+// thing that writes that: routing through SetPlan keeps the atomic write, the
+// validation, the PlanAt stamp, and the undo entry, none of which an agent
+// writing the file itself would produce.
+// The directory is created here, not just named. A task with no plan yet has no
+// plan directory either, so handing an agent a path inside one that does not
+// exist would make the write fail — and the plan agreed in the conversation
+// would be lost at the last step, which is the worst possible moment.
+func (s *Store) PlanDraftPath(id int) (string, error) {
+	d, err := s.Load()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(s.planDir(d.Space), dataDirMode); err != nil {
+		return "", s.redact(err)
+	}
+	return s.planDraftPath(d.Space, id), nil
+}
+
+func (s *Store) planDraftPath(space string, id int) string {
+	return filepath.Join(s.planDir(space), strconv.Itoa(id)+".draft.md")
+}
+
+// AdoptPlanDraft attaches whatever an agent left at the draft path, and reports
+// whether there was anything to attach.
+//
+// Called after an interactive session ends. A missing or blank draft is the
+// ordinary case — most conversations do not end in a plan — so it is not an
+// error.
+func (s *Store) AdoptPlanDraft(id int) (task.Task, Data, bool, error) {
+	d, err := s.Load()
+	if err != nil {
+		return task.Task{}, Data{}, false, err
+	}
+	draft := s.planDraftPath(d.Space, id)
+
+	b, err := os.ReadFile(draft)
+	if errors.Is(err, os.ErrNotExist) {
+		return task.Task{}, d, false, nil
+	}
+	if err != nil {
+		return task.Task{}, Data{}, false, s.redact(err)
+	}
+	body := strings.TrimSpace(task.SanitizeBlock(string(b)))
+	if body == "" {
+		_ = os.Remove(draft)
+		return task.Task{}, d, false, nil
+	}
+
+	t, out, err := s.SetPlan(id, body)
+	if err != nil {
+		// Deliberately left in place. The draft is the only copy of work the
+		// agent just did, and removing it because ike could not store it would
+		// destroy it — a plan too long to validate is still recoverable by hand
+		// from the path AdoptPlanDraft was about to read.
+		return task.Task{}, Data{}, false, err
+	}
+	_ = os.Remove(draft)
+	return t, out, true, nil
+}
+
+// SetSession pins an interactive conversation to a task, so later visits resume
+// it rather than starting over. A blank id forgets the conversation.
+func (s *Store) SetSession(id int, sessionID string) (task.Task, Data, error) {
+	var out task.Task
+	d, err := s.Mutate(func(d *Data) error {
+		i, err := findTask(d, id)
+		if err != nil {
+			return err
+		}
+		if d.Tasks[i].SessionID == sessionID {
+			out = d.Tasks[i]
+			return nil
+		}
+		// No pushUndo. A session ID is a pointer to a conversation that exists
+		// outside ike, and undoing back to a previous one would resume a
+		// conversation the user has moved on from — closer to reopening revoked
+		// MCP access than to reversing an edit.
+		d.Tasks[i].SessionID = sessionID
+		out = d.Tasks[i]
+		return nil
+	})
+	return out, d, err
+}
+
 // writePlan replaces one task's plan file.
 func (s *Store) writePlan(space string, id int, body string) error {
 	dir := s.planDir(space)
@@ -245,14 +338,19 @@ func (s *Store) PrunePlans() (int, error) {
 	return removed, nil
 }
 
-// planFileID parses "<id>.md" back into a task ID. Anything else in the
-// directory is left alone — a sweep that deleted files it did not recognize
-// would be a poor thing to point at a directory inside someone's data folder.
+// planFileID parses "<id>.md" or "<id>.draft.md" back into a task ID. Anything
+// else in the directory is left alone — a sweep that deleted files it did not
+// recognize would be a poor thing to point at a directory inside someone's data
+// folder.
+//
+// Drafts are included so a conversation abandoned half way does not leave a
+// file that nothing ever cleans up.
 func planFileID(name string) (int, bool) {
 	base, ok := strings.CutSuffix(name, ".md")
 	if !ok {
 		return 0, false
 	}
+	base = strings.TrimSuffix(base, ".draft")
 	id, err := strconv.Atoi(base)
 	if err != nil || id <= 0 {
 		return 0, false

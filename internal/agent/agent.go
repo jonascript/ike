@@ -97,6 +97,11 @@ func ValidatePermissionMode(mode string) error {
 // whose claude is not on PATH or who wants to wrap it.
 const binEnv = "IKE_AGENT_CMD"
 
+var (
+	errNoDir     = errors.New("a delegated run needs a working directory")
+	errNoSession = errors.New("a session needs an id; generate one with NewSessionID")
+)
+
 // Spec describes one run.
 type Spec struct {
 	Mode Mode
@@ -149,7 +154,7 @@ func Start(ctx context.Context, s Spec) (*Run, error) {
 		return nil, err
 	}
 	if s.Dir == "" {
-		return nil, errors.New("a delegated run needs a working directory")
+		return nil, errNoDir
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

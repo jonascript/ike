@@ -153,6 +153,8 @@ Run `ike` with no arguments.
 | `f` | data file picker (`o` there types a path) |
 | `p` | show the plan attached to the selected task |
 | `P` | ask an agent to draft a plan |
+| `c` | open a Claude Code session and talk the plan through (resumes the task's) |
+| `C` | same, but to work on it together |
 | `D` | delegate the task to an agent, or reattach to a run already going |
 | `?` | toggle help |
 | `q` | quit |
@@ -160,9 +162,10 @@ Run `ike` with no arguments.
 Changes made by the CLI or MCP server while the TUI is open appear within ~2 seconds.
 
 A dim `◆ mcp` marker sits in the footer while AI agent access is enabled; see
-[MCP](#mcp). No marker means nothing but you can reach the matrix. A `✎` after a
-title means the task has a plan attached; `⣾` means an agent is working on it
-right now (see [Delegating a task](#delegating-a-task)).
+[MCP](#mcp). No marker means nothing but you can reach the matrix. After a title,
+`✎` means the task has a plan attached, `⌁` that it has a conversation you can
+pick back up, and `⣾` that an agent is working on it right now (see
+[Delegating a task](#delegating-a-task)).
 
 ## CLI
 
@@ -303,16 +306,42 @@ ike plan 3 --clear               # remove it
 The plan is yours. Read it, argue with it, edit it — then either do the work
 yourself, or hand it on.
 
+**Or talk it through.** `ike plan 3 -i` (or `c` in the TUI) hands the terminal to
+a real Claude Code session, opened in the task's directory and already briefed on
+it. Exit the session and you're back in ike exactly where you were.
+
+The conversation belongs to the task. Run it again next week and you resume the
+same session — full history, nothing re-explained:
+
+```sh
+ike plan 3 -i                # first time: a new conversation, briefed on the task
+ike plan 3 -i                # later: picks up where you left off
+ike plan 3 -i --new-session  # start over deliberately
+```
+
+When you agree on a plan, the agent writes it to a path ike gave it, and ike
+attaches it to the task as you come back — so `ike plan 3 --show` reflects what
+you actually decided together. A conversation that ends without a plan attaches
+nothing, which is most of them.
+
+`⌁` marks a task with a conversation waiting to be picked up.
+
 **Hand it on.** `ike delegate 3` (or `D`) runs an agent that carries the task
 out, following the attached plan if there is one.
 
 ```sh
 ike agent enable                 # required before any delegated run
-ike delegate 3                   # follow the attached plan
+ike delegate 3                   # follow the attached plan, streaming
+ike delegate 3 -i                # supervise it in a real session instead
 ike delegate 3 --plan-first      # draft a plan, then carry it out
 ike delegate 3 --dir ~/dev/thing # set the working directory
 ike delegate 3 --model opus      # choose a model
 ```
+
+`-i` works here too, and resumes the same per-task conversation: the agent does
+the work while you watch and answer its questions, rather than reporting back
+afterwards. Being present doesn't remove the gate — `ike agent enable` is still
+required, because it's still ike starting an agent that edits your files.
 
 **Delegation is off by default**, separately from MCP access. Letting an agent
 edit your task list and letting ike start a process that edits your *files* are

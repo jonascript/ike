@@ -133,6 +133,7 @@ func onOff(on bool) string {
 func newPlanCmd(open opener) *cobra.Command {
 	var (
 		show, edit, clear, prune bool
+		interactive, fresh       bool
 		fromFile, dir, model     string
 	)
 	cmd := &cobra.Command{
@@ -141,6 +142,9 @@ func newPlanCmd(open opener) *cobra.Command {
 		Long: "With no flags, asks the agent to draft a plan and attaches it to the task.\n" +
 			"That run is read-only: it explores the working directory but cannot change it,\n" +
 			"so it needs no permission.\n\n" +
+			"With -i it opens a real Claude Code session instead, so you can talk the plan\n" +
+			"through. The conversation is remembered: run it again and you pick up where you\n" +
+			"left off. Whatever you agree on is attached to the task when you exit.\n\n" +
 			"A plan is yours to keep or hand on. `ike delegate` follows it if there is one.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: withStore(open, func(cmd *cobra.Command, args []string, s *store.Store) error {
@@ -193,6 +197,10 @@ func newPlanCmd(open opener) *cobra.Command {
 
 			case edit:
 				return editPlan(cmd, s, id)
+
+			case interactive:
+				return session(cmd, s, id, agent.ModePlan,
+					sessionOpts{dir: dir, model: model, fresh: fresh})
 			}
 
 			return draftPlan(cmd, s, id, dir, model)
@@ -205,19 +213,27 @@ func newPlanCmd(open opener) *cobra.Command {
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "attach a plan written elsewhere")
 	cmd.Flags().StringVar(&dir, "dir", "", "working directory to explore (remembered on the task)")
 	cmd.Flags().StringVar(&model, "model", "", "model to draft with, e.g. opus or sonnet")
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false,
+		"open a Claude Code session and talk the plan through, resuming last time's")
+	cmd.Flags().BoolVar(&fresh, "new-session", false,
+		"start a new conversation instead of resuming the task's")
 	return cmd
 }
 
 func newDelegateCmd(open opener) *cobra.Command {
 	var (
-		dir, permission, model string
-		planFirst              bool
+		dir, permission, model   string
+		planFirst                bool
+		interactive, freshSesson bool
 	)
 	cmd := &cobra.Command{
 		Use:   "delegate <id>",
 		Short: "Hand a task to an agent and watch it work",
 		Long: "Runs the Claude Code CLI in the task's working directory, following the\n" +
 			"attached plan if there is one, and streams what it does.\n\n" +
+			"With -i it hands you the terminal instead, so you can supervise and answer\n" +
+			"questions. The conversation is remembered per task: run it again and you pick\n" +
+			"up where you left off rather than briefing a new agent.\n\n" +
 			"This needs permission, because the agent can change files and run commands:\n\n" +
 			"  ike agent enable\n\n" +
 			"Runs are unattended, so nothing can prompt you mid-run. --permission-mode\n" +
@@ -245,6 +261,14 @@ func newDelegateCmd(open opener) *cobra.Command {
 			if !enabled {
 				//nolint:staticcheck // ST1005: formatted for a human, not a caller.
 				return errors.New(agentDisabledMsg)
+			}
+
+			if interactive {
+				// Supervised: you are at the terminal, so the agent can ask
+				// rather than deciding on your behalf.
+				return session(cmd, s, id, agent.ModeExecute, sessionOpts{
+					dir: dir, permission: permission, model: model, fresh: freshSesson,
+				})
 			}
 
 			if planFirst {
@@ -281,7 +305,105 @@ func newDelegateCmd(open opener) *cobra.Command {
 			agent.DefaultPermissionMode+"; manual is the one that restrains a run)")
 	cmd.Flags().StringVar(&model, "model", "", "model to run with, e.g. opus or sonnet")
 	cmd.Flags().BoolVar(&planFirst, "plan-first", false, "draft a plan, then carry it out")
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false,
+		"open a Claude Code session and supervise the work, resuming last time's")
+	cmd.Flags().BoolVar(&freshSesson, "new-session", false,
+		"start a new conversation instead of resuming the task's")
 	return cmd
+}
+
+// session hands the terminal to an interactive agent, then picks up whatever it
+// left behind.
+//
+// The conversation is pinned to the task: the ID is generated and stored before
+// the agent starts, so even a session that ends badly is resumable, and every
+// later visit continues it rather than briefing a new agent from scratch.
+func session(cmd *cobra.Command, s *store.Store, id int, mode agent.Mode, opts sessionOpts) error {
+	t, plan, err := prepare(cmd, s, id, opts.dir)
+	if err != nil {
+		return err
+	}
+	d, err := s.Load()
+	if err != nil {
+		return err
+	}
+
+	resume := t.HasSession() && !opts.fresh
+	if !resume {
+		sid, err := agent.NewSessionID()
+		if err != nil {
+			return err
+		}
+		// Stored first. A session ike started but did not record would be
+		// unreachable afterwards — the conversation would exist with no way
+		// back to it.
+		updated, _, err := s.SetSession(id, sid)
+		if err != nil {
+			return err
+		}
+		t = updated
+	}
+
+	draft, err := s.PlanDraftPath(id)
+	if err != nil {
+		return err
+	}
+
+	c, err := agent.InteractiveCommand(cmd.Context(), agent.Session{
+		Mode:           mode,
+		Title:          t.Title,
+		Quadrant:       d.Labels.Of(t.Quadrant),
+		Plan:           plan,
+		Dir:            t.Dir,
+		SessionID:      t.SessionID,
+		Resume:         resume,
+		DraftPath:      draft,
+		PermissionMode: opts.permission,
+		Model:          opts.model,
+	})
+	if err != nil {
+		return err
+	}
+	// The real terminal, because this is a conversation.
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+
+	out := cmd.OutOrStdout()
+	verb := "resuming the conversation about"
+	if !resume {
+		verb = "starting a conversation about"
+	}
+	fmt.Fprintf(out, "%s %d  %s\n  in %s\n  come back to it any time with the same command\n\n",
+		verb, t.ID, t.DisplayTitle(), t.Dir)
+
+	if err := c.Run(); err != nil {
+		// An agent you quit out of is the ordinary ending, and exit status is
+		// not a reliable way to tell that from a real failure — so the draft is
+		// still adopted below rather than the error stopping everything.
+		fmt.Fprintf(cmd.ErrOrStderr(), "the session ended with: %v\n", err)
+	}
+	return adoptDraft(cmd, s, id)
+}
+
+// sessionOpts are the flags a session shares with a streamed run.
+type sessionOpts struct {
+	dir        string
+	permission string
+	model      string
+	fresh      bool
+}
+
+// adoptDraft attaches a plan the agent left behind, if it left one.
+func adoptDraft(cmd *cobra.Command, s *store.Store, id int) error {
+	t, d, got, err := s.AdoptPlanDraft(id)
+	if err != nil {
+		return err
+	}
+	if !got {
+		return nil
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "\nattached the plan you agreed on to %d  %s%s\n  see it with: ike plan %d --show\n",
+		t.ID, t.DisplayTitle(), inSpace(cmd, d), t.ID)
+	return nil
 }
 
 // draftPlan runs a planning agent and attaches what it produces.

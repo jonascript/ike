@@ -286,25 +286,30 @@ func (m Model) renderTaskLines(q task.Quadrant, w, visible int, focused bool) []
 	return lines
 }
 
-// Delegation marks. A task can be planned, and one task at a time can have a
-// run going; the running mark wins, since it is the more immediate fact.
+// Delegation marks, in the order taskMark prefers them: a run in progress is
+// the most immediate fact, then a plan you can act on, then a conversation you
+// could pick back up.
 const (
 	planMark = " ✎"
 	runMark  = " ⣾"
+	chatMark = " ⌁"
 )
 
-// taskMark is the delegation marker for a row, or "" for a task with neither.
+// taskMark is the delegation marker for a row, or "" for a task with none.
 //
-// Rendered from PlanAt on the task rather than by looking for the plan file,
-// which is the whole reason that stamp is persisted: the matrix redraws on
-// every keypress and a stat per row per frame would be a poor trade for a
-// symbol.
+// One mark, not three: a row is a task title, and a column of symbols would
+// cost more width than it explains. Rendered from the stamps on the task rather
+// than by looking for the files behind them, which is the whole reason those
+// are persisted — the matrix redraws on every keypress, and a stat per row per
+// frame would be a poor trade for a symbol.
 func (m Model) taskMark(t task.Task) string {
-	if m.run != nil && !m.run.done && m.run.taskID == t.ID {
+	switch {
+	case m.run != nil && !m.run.done && m.run.taskID == t.ID:
 		return runMark
-	}
-	if t.HasPlan() {
+	case t.HasPlan():
 		return planMark
+	case t.HasSession():
+		return chatMark
 	}
 	return ""
 }
@@ -345,7 +350,7 @@ func (m Model) renderFooter() string {
 		undoHelp = "u undo · U redo"
 	}
 	help := "a add · e edit · x done · m move · J/K reorder · d delete · " +
-		undoHelp + " · v archive · s spaces · p plan · D delegate · ? help · q quit"
+		undoHelp + " · v archive · s spaces · p plan · c chat · D delegate · ? help · q quit"
 	if m.showHelp {
 		help = strings.Join([]string{
 			"1-4 focus quadrant · tab/shift+tab cycle · j/k or ↑/↓ select task",
@@ -359,6 +364,8 @@ func (m Model) renderFooter() string {
 			"space changes are not undoable, unlike changes to tasks",
 			"f data files: switch to another matrix file, or o to type a path",
 			"p show the attached plan (" + strings.TrimSpace(planMark) + " marks a task that has one) · P draft one with an agent",
+			"c chat: hands the terminal to Claude Code to talk the plan through · C to work on it together",
+			"a task keeps its conversation (" + strings.TrimSpace(chatMark) + "), so c picks up where you left off rather than starting over",
 			"D delegate: run an agent on the task, or reattach to a run already going",
 			"in a run: esc detaches and it keeps going · ctrl+c stops it · quitting ike stops it",
 			m.agentHelpLine(),

@@ -428,6 +428,12 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.PrevSpace):
 		m.cycleSpace(-1)
 
+	case key.Matches(msg, keys.Chat):
+		return m, m.startSession(agent.ModePlan)
+
+	case key.Matches(msg, keys.Supervise):
+		return m, m.startSession(agent.ModeExecute)
+
 	case key.Matches(msg, keys.Plan):
 		m.openPlan()
 

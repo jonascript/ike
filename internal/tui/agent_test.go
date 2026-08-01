@@ -527,6 +527,143 @@ func TestDelegateRunEndToEnd(t *testing.T) {
 	}
 }
 
+// `c` hands the terminal over, and the conversation is pinned to the task so
+// pressing it again resumes rather than briefing a new agent.
+func TestChatPinsThenResumesTheConversation(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("ship v2", task.Do)
+	dir := t.TempDir()
+	if _, _, err := s.SetDir(1, "test", dir); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+	fakeAgentCLI(t)
+
+	cmd := m.startSession(agent.ModePlan)
+	if cmd == nil {
+		t.Fatal("c should have started a session")
+	}
+	// Back on the matrix, because the terminal is about to belong to claude —
+	// there is no ike view to be in while it does.
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal during a handover", m.mode)
+	}
+
+	d, _ := s.Load()
+	sid := d.Tasks[0].SessionID
+	if sid == "" {
+		t.Fatal("the session should be stored before the agent starts, or it is unresumable")
+	}
+	// A task with a conversation is marked, so you can see there is one to
+	// pick up.
+	m.refreshFromStore(t)
+	if !strings.Contains(m.render(), strings.TrimSpace(chatMark)) {
+		t.Error("a task with a conversation should be marked in the matrix")
+	}
+
+	// Pressing it again resumes the same one.
+	m2 := m
+	if cmd := m2.startSession(agent.ModePlan); cmd == nil {
+		t.Fatal("c should work a second time")
+	}
+	d, _ = s.Load()
+	if d.Tasks[0].SessionID != sid {
+		t.Error("a second visit started a different conversation")
+	}
+}
+
+// Supervising still needs permission; being at the terminal does not remove the
+// decision to let ike start an agent that edits files.
+func TestSupervisingStillNeedsTheGate(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("ship v2", task.Do)
+	if _, _, err := s.SetDir(1, "test", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshFromStore(t)
+	fakeAgentCLI(t)
+
+	if cmd := m.startSession(agent.ModeExecute); cmd != nil {
+		t.Error("C should be refused with the gate off")
+	}
+	if !strings.Contains(m.status, "ike agent enable") {
+		t.Errorf("status = %q", m.status)
+	}
+
+	// Talking a plan through is read-only, so it is not gated.
+	if cmd := m.startSession(agent.ModePlan); cmd == nil {
+		t.Error("c should work with the gate off — planning is read-only")
+	}
+}
+
+// A streaming run owns the screen, and a session is about to own the terminal.
+// Letting both happen would corrupt the display.
+func TestSessionIsRefusedWhileARunIsGoing(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("ship v2", task.Do)
+	m.refreshFromStore(t)
+	m = running(m, 1, agent.ModeExecute)
+	m.mode = modeNormal
+
+	if cmd := m.startSession(agent.ModePlan); cmd != nil {
+		t.Error("a session should be refused while a run is streaming")
+	}
+	if !strings.Contains(m.status, "run is going") {
+		t.Errorf("status = %q", m.status)
+	}
+}
+
+// Coming back from a session adopts whatever plan was agreed, and re-reads the
+// store — the agent may have changed it while the terminal was elsewhere.
+func TestReturningFromASessionAdoptsThePlan(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("ship v2", task.Do)
+	m.refreshFromStore(t)
+
+	draft, err := s.PlanDraftPath(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draft, []byte("## Agreed\n\nDo the thing.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	next, cmd := m.Update(sessionEndedMsg{taskID: 1})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("returning should look for a plan the session left")
+	}
+	m = send(t, m, cmd())
+
+	if body, _ := s.Plan(1); body != "## Agreed\n\nDo the thing." {
+		t.Errorf("stored plan = %q", body)
+	}
+	if !strings.Contains(m.status, "attached the plan") {
+		t.Errorf("status = %q", m.status)
+	}
+	if !strings.Contains(m.render(), strings.TrimSpace(planMark)) {
+		t.Error("the matrix should mark the task as planned")
+	}
+}
+
+// Most conversations do not end in a plan, and that is not an error.
+func TestReturningWithNoPlanIsQuiet(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("ship v2", task.Do)
+	m.refreshFromStore(t)
+
+	next, cmd := m.Update(sessionEndedMsg{taskID: 1})
+	m = next.(Model)
+	m = send(t, m, cmd())
+
+	if strings.Contains(m.status, "attached") {
+		t.Errorf("status = %q, nothing was agreed", m.status)
+	}
+	if body, _ := s.Plan(1); body != "" {
+		t.Errorf("a plan appeared from nowhere: %q", body)
+	}
+}
+
 // The gate is read fresh when a run starts, not from the polled Data, so
 // revoking it in another terminal takes effect without waiting for a tick.
 func TestGateIsReadFreshWhenStartingARun(t *testing.T) {

@@ -215,10 +215,22 @@ type Task struct {
 	// no plan. It says a plan exists without making a frontend stat a file to
 	// find out, so the matrix can mark planned tasks from the Data it holds.
 	PlanAt *time.Time `json:"plan_at,omitempty"`
+	// SessionID pins an interactive agent conversation to this task.
+	//
+	// Claude Code lets the caller choose a session's ID rather than only
+	// reporting one back, so ike mints this once and passes it as --session-id
+	// the first time, then --resume on every later visit. That is what makes
+	// the conversation a property of the task: you can talk something through,
+	// leave, and come back days later to the same history rather than
+	// re-explaining it.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // HasPlan reports whether a plan is attached.
 func (t Task) HasPlan() bool { return t.PlanAt != nil }
+
+// HasSession reports whether a conversation has been started for this task.
+func (t Task) HasSession() bool { return t.SessionID != "" }
 
 // DisplayTitle is the title as it is safe to print into a terminal. Use it for
 // every human-facing render; --json output keeps the raw title, since

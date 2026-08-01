@@ -100,21 +100,11 @@ func (m *Model) startAgent(mode agent.Mode) tea.Cmd {
 		}
 	}
 
-	dir := t.Dir
-	if dir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			m.status = err.Error()
-			return nil
-		}
-		// Remembered, so the task stays attached to the project rather than to
-		// wherever this particular ike was started.
-		updated, d, err := m.store.SetDir(t.ID, "the current directory", cwd)
-		if !m.apply(d, err) {
-			return nil
-		}
-		t, dir = updated, updated.Dir
+	t, ok = m.ensureDir(t)
+	if !ok {
+		return nil
 	}
+	dir := t.Dir
 
 	plan, err := m.store.Plan(t.ID)
 	if err != nil {
@@ -146,6 +136,125 @@ func (m *Model) startAgent(mode agent.Mode) tea.Cmd {
 		r, err := agent.Start(context.Background(), spec)
 		return agentStartedMsg{seq: seq, run: r, spec: spec, task: captured, err: err}
 	}
+}
+
+// sessionEndedMsg says an interactive session has exited and the TUI has the
+// terminal back.
+type sessionEndedMsg struct {
+	taskID int
+	err    error
+}
+
+// draftAdoptedMsg carries a plan an interactive session left behind.
+type draftAdoptedMsg struct {
+	data store.Data
+	task task.Task
+	got  bool
+	err  error
+}
+
+// startSession hands the terminal to an interactive agent on the selected task.
+//
+// tea.ExecProcess is what makes this work: it releases the terminal, runs the
+// command with it, and restores the TUI when the command exits — so `c` feels
+// like stepping out of ike and back in, with the matrix exactly as you left it.
+// The command's streams are left nil deliberately, because that is the signal
+// for ExecProcess to wire the real terminal to them.
+func (m *Model) startSession(mode agent.Mode) tea.Cmd {
+	t, ok := m.selected()
+	if !ok {
+		return nil
+	}
+	if m.run != nil && !m.run.done {
+		// The terminal is about to belong to something else, and a streaming
+		// run drawing into it would corrupt both.
+		m.status = "a run is going; stop it with ctrl+c in the run view first"
+		return nil
+	}
+	if mode == agent.ModeExecute {
+		enabled, err := m.store.AgentEnabled()
+		if err != nil {
+			m.status = err.Error()
+			return nil
+		}
+		if !enabled {
+			m.status = "delegation is off · run `ike agent enable` to allow it"
+			return nil
+		}
+	}
+
+	t, ok = m.ensureDir(t)
+	if !ok {
+		return nil
+	}
+	plan, err := m.store.Plan(t.ID)
+	if err != nil {
+		m.status = err.Error()
+		return nil
+	}
+
+	resume := t.HasSession()
+	if !resume {
+		sid, err := agent.NewSessionID()
+		if err != nil {
+			m.status = err.Error()
+			return nil
+		}
+		// Stored before the agent starts, so a session that ends badly is
+		// still reachable next time.
+		updated, d, err := m.store.SetSession(t.ID, sid)
+		if !m.apply(d, err) {
+			return nil
+		}
+		t = updated
+	}
+
+	draft, err := m.store.PlanDraftPath(t.ID)
+	if err != nil {
+		m.status = err.Error()
+		return nil
+	}
+
+	c, err := agent.InteractiveCommand(context.Background(), agent.Session{
+		Mode:      mode,
+		Title:     t.Title,
+		Quadrant:  m.data.Labels.Of(t.Quadrant),
+		Plan:      plan,
+		Dir:       t.Dir,
+		SessionID: t.SessionID,
+		Resume:    resume,
+		DraftPath: draft,
+	})
+	if err != nil {
+		m.status = err.Error()
+		return nil
+	}
+
+	m.mode = modeNormal
+	m.status = ""
+	id := t.ID
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return sessionEndedMsg{taskID: id, err: err}
+	})
+}
+
+// ensureDir resolves and stores a task's working directory if it has none.
+func (m *Model) ensureDir(t task.Task) (task.Task, bool) {
+	if t.Dir != "" {
+		return t, true
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		m.status = err.Error()
+		return t, false
+	}
+	// Remembered, so the task stays attached to the project rather than to
+	// wherever this particular ike was started.
+	updated, d, err := m.store.SetDir(t.ID, "the current directory", cwd)
+	if !m.apply(d, err) {
+		return t, false
+	}
+	return updated, true
 }
 
 // waitForEvent reads one event and re-issues itself, which is how a channel is
@@ -199,6 +308,39 @@ func (m Model) handleAgentMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			return m, m.savePlanCmd(), true
 		}
 		m.pinCursor()
+		return m, nil, true
+
+	case sessionEndedMsg:
+		// Back from the conversation. The store may have moved a long way while
+		// the terminal was elsewhere — the agent can have run ike itself — so
+		// re-read rather than trusting what was on screen before.
+		if d, err := m.store.Load(); err == nil {
+			m.followCurrentSpace(&d)
+			m.refresh(d)
+		}
+		if msg.err != nil {
+			// Quitting out of an agent is the ordinary ending and is not
+			// reliably distinguishable from a real failure by exit status, so
+			// this is reported without being treated as one.
+			m.status = "session ended: " + task.SanitizeDisplay(msg.err.Error())
+		}
+		id := msg.taskID
+		s := m.store
+		return m, func() tea.Msg {
+			t, d, got, err := s.AdoptPlanDraft(id)
+			return draftAdoptedMsg{data: d, task: t, got: got, err: err}
+		}, true
+
+	case draftAdoptedMsg:
+		if msg.err != nil {
+			m.status = msg.err.Error()
+			return m, nil, true
+		}
+		if !msg.got {
+			return m, nil, true
+		}
+		m.refresh(msg.data)
+		m.status = "attached the plan you agreed on to " + msg.task.DisplayTitle()
 		return m, nil, true
 
 	case planSavedMsg:
@@ -390,7 +532,7 @@ func (m Model) renderPlan() string {
 		rows:   rows,
 		empty:  "no plan attached",
 		cursor: m.planCursor,
-		hint:   "P draft with an agent · D delegate · j/k scroll · esc/q back",
+		hint:   "P draft with an agent · c talk it through · D delegate · j/k scroll · esc/q back",
 	})
 }
 
@@ -404,6 +546,10 @@ func (m Model) handlePlanKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.DraftPlan):
 		m.mode = modeNormal
 		return m, m.startAgent(agent.ModePlan)
+
+	case key.Matches(msg, keys.Chat):
+		m.mode = modeNormal
+		return m, m.startSession(agent.ModePlan)
 
 	case key.Matches(msg, keys.Agent):
 		m.mode = modeNormal

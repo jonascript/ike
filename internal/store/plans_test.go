@@ -379,6 +379,157 @@ func TestPruneKeepsArchivedTasksPlans(t *testing.T) {
 	}
 }
 
+// A conversation is pinned to the task so a later visit resumes it rather than
+// briefing a new agent.
+func TestSetSessionPersists(t *testing.T) {
+	s := testStore(t)
+	a, _, _ := s.Add("ship v2", task.Do)
+
+	if a.HasSession() {
+		t.Error("a fresh task has no conversation")
+	}
+	got, d, err := s.SetSession(a.ID, "d3c56c08-c430-455d-8f2c-849ff6294610")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HasSession() {
+		t.Error("the returned task should carry the session")
+	}
+	if ts := d.List(task.Do); len(ts) != 1 || !ts[0].HasSession() {
+		t.Error("the returned Data should show the session")
+	}
+	reread, _ := s.Load()
+	if reread.Tasks[0].SessionID != "d3c56c08-c430-455d-8f2c-849ff6294610" {
+		t.Errorf("SessionID = %q, it did not persist", reread.Tasks[0].SessionID)
+	}
+}
+
+// Undo must not walk a task back to an older conversation: the ID points at
+// something outside ike, and resuming a conversation you moved on from is
+// closer to reopening revoked access than to reversing an edit.
+func TestUndoDoesNotRewindTheSession(t *testing.T) {
+	s := testStore(t)
+	a, _, _ := s.Add("ship v2", task.Do)
+	s.SetSession(a.ID, "first")
+	s.SetSession(a.ID, "second")
+
+	for range 3 {
+		if _, _, err := s.Undo(); err != nil {
+			break
+		}
+	}
+	d, _ := s.Load()
+	if len(d.Tasks) > 0 && d.Tasks[0].SessionID == "first" {
+		t.Error("undo rewound to a previous conversation")
+	}
+}
+
+// The draft is how a plan agreed in conversation gets attached: the agent
+// writes it, ike adopts it through SetPlan so it still gets validation, the
+// atomic write, the stamp, and an undo entry.
+func TestAdoptPlanDraft(t *testing.T) {
+	s := testStore(t)
+	a, _, _ := s.Add("ship v2", task.Do)
+
+	// Nothing to adopt is the ordinary case, not an error.
+	if _, _, got, err := s.AdoptPlanDraft(a.ID); err != nil || got {
+		t.Errorf("AdoptPlanDraft with no draft = %v, %v; want false, nil", got, err)
+	}
+
+	draft, err := s.PlanDraftPath(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(draft), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draft, []byte("## Agreed\n\nDo the thing.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tk, d, got, err := s.AdoptPlanDraft(a.ID)
+	if err != nil || !got {
+		t.Fatalf("AdoptPlanDraft = %v, %v", got, err)
+	}
+	if !tk.HasPlan() {
+		t.Error("adopting should stamp the task as planned")
+	}
+	if ts := d.List(task.Do); len(ts) != 1 || !ts[0].HasPlan() {
+		t.Error("the returned Data should show the task as planned")
+	}
+	if body, _ := s.Plan(a.ID); body != "## Agreed\n\nDo the thing." {
+		t.Errorf("Plan() = %q", body)
+	}
+	// Consumed, so the next session does not re-adopt a stale plan.
+	if _, err := os.Stat(draft); !os.IsNotExist(err) {
+		t.Error("the draft should be removed once adopted")
+	}
+}
+
+// A blank draft means the conversation did not end in a plan, which is most of
+// them.
+func TestAdoptPlanDraftIgnoresABlankDraft(t *testing.T) {
+	s := testStore(t)
+	a, _, _ := s.Add("ship v2", task.Do)
+	draft, _ := s.PlanDraftPath(a.ID)
+	if err := os.MkdirAll(filepath.Dir(draft), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draft, []byte("   \n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, got, err := s.AdoptPlanDraft(a.ID); err != nil || got {
+		t.Errorf("AdoptPlanDraft = %v, %v; want false, nil", got, err)
+	}
+	if _, err := os.Stat(draft); !os.IsNotExist(err) {
+		t.Error("a blank draft should be cleared away")
+	}
+}
+
+// A draft ike cannot store is left in place: it is the only copy of what the
+// agent just wrote, and deleting it because validation failed would destroy it.
+func TestAdoptPlanDraftKeepsADraftItCannotStore(t *testing.T) {
+	s := testStore(t)
+	a, _, _ := s.Add("ship v2", task.Do)
+	draft, _ := s.PlanDraftPath(a.ID)
+	if err := os.MkdirAll(filepath.Dir(draft), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draft, []byte(strings.Repeat("x", task.MaxPlanLen+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := s.AdoptPlanDraft(a.ID); err == nil {
+		t.Fatal("an over-long draft should be refused")
+	}
+	if _, err := os.Stat(draft); err != nil {
+		t.Error("the draft should survive so it can be recovered by hand")
+	}
+}
+
+// A conversation abandoned half way leaves a draft; prune sweeps those too.
+func TestPruneRemovesOrphanedDrafts(t *testing.T) {
+	s := testStore(t)
+	a, _, _ := s.Add("ship v2", task.Do)
+	draft, _ := s.PlanDraftPath(a.ID)
+	if err := os.MkdirAll(filepath.Dir(draft), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draft, []byte("half a plan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// While the task is alive the draft is not an orphan.
+	if n, _ := s.PrunePlans(); n != 0 {
+		t.Errorf("PrunePlans() removed %d while the task still exists", n)
+	}
+	s.Delete(a.ID)
+	if n, _ := s.PrunePlans(); n != 1 {
+		t.Errorf("PrunePlans() removed %d, want the orphaned draft", n)
+	}
+}
+
 func TestPlanFileID(t *testing.T) {
 	cases := []struct {
 		name string
@@ -387,6 +538,9 @@ func TestPlanFileID(t *testing.T) {
 	}{
 		{"1.md", 1, true},
 		{"42.md", 42, true},
+		{"1.draft.md", 1, true},
+		{"42.draft.md", 42, true},
+		{"draft.md", 0, false},
 		{"0.md", 0, false},
 		{"-1.md", 0, false},
 		{"notanumber.md", 0, false},

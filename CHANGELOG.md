@@ -30,6 +30,17 @@ All notable changes to ike are recorded here. The format follows
 - **`--permission-mode` on `ike delegate`**, validated against the modes the CLI
   accepts so a typo fails before a process starts rather than mid-run. Delegated
   runs default to `auto`, the mode intended for unattended work.
+- **Jump into a real Claude Code session on a task** with `-i` (`ike plan 3 -i`,
+  `ike delegate 3 -i`) or `c`/`C` in the TUI. ike steps aside, the agent gets the
+  terminal already briefed on the task and opened in its directory, and exiting
+  puts you back where you were.
+- **The conversation belongs to the task.** ike pins a session ID the first time
+  and resumes it on every later visit, so you can talk something through, leave,
+  and come back days later to the same history instead of re-explaining it.
+  `--new-session` starts over; `⌁` marks a task that has one waiting.
+- **A plan agreed in conversation is attached automatically.** The agent is given
+  a path to write it to, and ike picks it up as you come back — so
+  `ike plan 3 --show` reflects what you decided together.
 
 ### Notes
 

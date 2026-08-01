@@ -45,6 +45,10 @@ type keyMap struct {
 	Plan      key.Binding
 	DraftPlan key.Binding
 	Agent     key.Binding
+	// Chat hands the terminal to a real Claude Code session on the selected
+	// task, and Supervise does the same for carrying the work out.
+	Chat      key.Binding
+	Supervise key.Binding
 }
 
 var keys = keyMap{
@@ -82,4 +86,6 @@ var keys = keyMap{
 	Plan:      key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "plan")),
 	DraftPlan: key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "draft a plan")),
 	Agent:     key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "delegate")),
+	Chat:      key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "chat about the plan")),
+	Supervise: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "work on it together")),
 }

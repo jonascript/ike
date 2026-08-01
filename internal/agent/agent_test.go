@@ -501,6 +501,142 @@ func TestDefaultPermissionModeIsAuto(t *testing.T) {
 	}
 }
 
+func TestNewSessionID(t *testing.T) {
+	seen := map[string]bool{}
+	for range 100 {
+		id, err := NewSessionID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// --session-id requires a valid UUID, so the shape is not cosmetic.
+		if len(id) != 36 {
+			t.Fatalf("id = %q, want 36 characters", id)
+		}
+		for _, i := range []int{8, 13, 18, 23} {
+			if id[i] != '-' {
+				t.Fatalf("id = %q, want dashes at the UUID positions", id)
+			}
+		}
+		if id[14] != '4' {
+			t.Errorf("id = %q, want version 4", id)
+		}
+		if !strings.ContainsRune("89ab", rune(id[19])) {
+			t.Errorf("id = %q, want an RFC 4122 variant nibble", id)
+		}
+		if seen[id] {
+			t.Fatalf("id %q was generated twice", id)
+		}
+		seen[id] = true
+	}
+}
+
+// A new conversation pins the ID ike chose; a later visit resumes it. That is
+// what makes the conversation a property of the task rather than of one visit.
+func TestSessionArgsPinThenResume(t *testing.T) {
+	const id = "d3c56c08-c430-455d-8f2c-849ff6294610"
+	s := Session{Mode: ModePlan, Title: "ship v2", Dir: "/tmp", SessionID: id}
+
+	first := strings.Join(sessionArgs(s), "\x00")
+	if !strings.Contains(first, "--session-id\x00"+id) {
+		t.Errorf("a new session should pin the id: %q", first)
+	}
+	if strings.Contains(first, "--resume") {
+		t.Error("a new session must not try to resume")
+	}
+	if !strings.Contains(first, "ship v2") {
+		t.Error("a new session should carry the opening brief")
+	}
+
+	s.Resume = true
+	again := strings.Join(sessionArgs(s), "\x00")
+	if !strings.Contains(again, "--resume\x00"+id) {
+		t.Errorf("a later visit should resume: %q", again)
+	}
+	// No brief on resume: the conversation already knows the task, and
+	// restating it would undo the point of resuming.
+	if strings.Contains(again, "ship v2") {
+		t.Errorf("a resumed session should not repeat the brief: %q", again)
+	}
+	// But there must still be *a* prompt. --resume with none fails outright
+	// with "Provide a prompt to continue the conversation", and the session
+	// never opens — which is invisible until you try to come back to one.
+	if !strings.Contains(again, resumePrompt) {
+		t.Errorf("a resumed session needs a prompt of some kind: %q", again)
+	}
+}
+
+// Talking a plan through must not be able to change the directory it is about,
+// the same guarantee a headless planning run gives.
+func TestPlanSessionIsReadOnly(t *testing.T) {
+	got := strings.Join(sessionArgs(Session{
+		Mode: ModePlan, SessionID: "x", PermissionMode: "bypassPermissions",
+	}), " ")
+	if !strings.Contains(got, "--permission-mode plan") {
+		t.Errorf("args = %q, want plan mode", got)
+	}
+	if strings.Contains(got, "bypassPermissions") {
+		t.Error("a permission override must not apply to a planning conversation")
+	}
+}
+
+// The brief names the draft path, and that instruction stays in the
+// conversation's history — which is why the path has to be stable per task.
+func TestSessionPromptNamesTheDraftPath(t *testing.T) {
+	const draft = "/data/tasks.json.plans/default/3.draft.md"
+	got := sessionPrompt(Session{Mode: ModePlan, Title: "ship v2", Dir: "/tmp", DraftPath: draft})
+	if !strings.Contains(got, draft) {
+		t.Errorf("the brief should name where to leave the plan:\n%s", got)
+	}
+	if !strings.Contains(got, "ship v2") {
+		t.Error("the brief should name the task")
+	}
+
+	// Without a draft path there is nothing to say about one.
+	if strings.Contains(sessionPrompt(Session{Mode: ModePlan, Dir: "/tmp"}), "write it") {
+		t.Error("no draft path means no instruction about writing one")
+	}
+}
+
+// The terminal belongs to the caller: the CLI hands over the real one and the
+// TUI lets tea.ExecProcess do it, which only fills in streams still nil.
+func TestInteractiveCommandLeavesTheTerminalToTheCaller(t *testing.T) {
+	fakeAgent(t, nil)
+	dir := t.TempDir()
+
+	c, err := InteractiveCommand(context.Background(), Session{
+		Mode: ModePlan, Title: "ship v2", Dir: dir, SessionID: "abc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Stdin != nil || c.Stdout != nil || c.Stderr != nil {
+		t.Error("a session's streams must be left for the caller to supply")
+	}
+	if c.Dir != dir {
+		t.Errorf("cmd.Dir = %q, want %q", c.Dir, dir)
+	}
+	// No process group: this is the foreground job and must receive the ctrl+c
+	// you type at it, which its own group would prevent.
+	if c.SysProcAttr != nil {
+		t.Error("a session must not be put in its own process group")
+	}
+}
+
+func TestInteractiveCommandRequiresDirAndSession(t *testing.T) {
+	fakeAgent(t, nil)
+	if _, err := InteractiveCommand(context.Background(), Session{SessionID: "abc"}); err == nil {
+		t.Error("a session with no working directory should be refused")
+	}
+	if _, err := InteractiveCommand(context.Background(), Session{Dir: t.TempDir()}); err == nil {
+		t.Error("a session with no id should be refused — it would be unresumable")
+	}
+	if _, err := InteractiveCommand(context.Background(), Session{
+		Mode: ModeExecute, Dir: t.TempDir(), SessionID: "abc", PermissionMode: "nonsense",
+	}); err == nil {
+		t.Error("a bad permission mode should be refused")
+	}
+}
+
 // A planning run must not be able to change the directory it is exploring.
 func TestPlanModeIsReadOnly(t *testing.T) {
 	a := args(Spec{Mode: ModePlan, PermissionMode: "bypassPermissions"})
