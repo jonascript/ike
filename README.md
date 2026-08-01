@@ -321,10 +321,40 @@ MCP gate, the setting is per data file, survives restarts, is never carried into
 an export, and is not part of undo history — no sequence of `ike undo` can
 re-open it.
 
-Runs use `--permission-mode acceptEdits`, so the agent reads and writes files
-freely but does not get your shell without asking; override with
-`--permission-mode`. **A delegated run never completes the task** — read what it
-did and decide.
+**A delegated run never completes the task** — read what it did and decide.
+
+### What a delegated run is allowed to do
+
+Runs are unattended, so nothing can prompt you part-way through. The default is
+`--permission-mode auto`, which lets the agent change files *and run commands* in
+the working directory.
+
+Do not read the mode names as a safety ladder — they are not. Measured against a
+real run, asking an agent to `rm` a file:
+
+| `--permission-mode` | result |
+|---|---|
+| `manual` | denied — the file survived |
+| `acceptEdits` | allowed — the file was deleted |
+| `auto` (default) | allowed — the file was deleted |
+| `bypassPermissions` | allowed, by definition |
+
+So `acceptEdits` is **not** a middle setting that withholds the shell.
+`manual` is the one mode that meaningfully restrains a delegated run: with nobody
+to ask, it denies anything needing approval, and the denials come back in the
+transcript. Use it when you want the agent to work and then stop at the first
+thing you would have wanted to be asked about.
+
+```sh
+ike delegate 3 --permission-mode manual
+```
+
+One trap worth knowing if you test this yourself: commands the harness
+classifies as safe — `echo`, `ls` — run under *every* mode including `manual`,
+so a harmless command shows no difference between any of them.
+
+The practical control is therefore the gate — whether ike starts an agent at all
+— rather than the mode it starts it in.
 
 Each task remembers a **working directory**. The first run stores the one you
 give it, or the directory you ran from, so `cd ~/dev/thing && ike delegate 3`

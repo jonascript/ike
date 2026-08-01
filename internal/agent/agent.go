@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -37,14 +38,60 @@ const (
 
 // DefaultPermissionMode is what an execute run uses unless told otherwise.
 //
-// acceptEdits lets the agent read and write files without stopping, but still
-// holds back Bash and the rest, which surface as denials in the transcript
-// instead. A headless run cannot answer a permission prompt, so the choice is
-// really between "edits go through" and "nothing that needs permission goes
-// through"; this is the setting that makes a delegated task useful without
-// handing over the shell. bypassPermissions is available for anyone who wants
-// it, deliberately by explicit request only.
-const DefaultPermissionMode = "acceptEdits"
+// auto is the mode meant for unattended work, which is what a delegated run is.
+//
+// Be clear about what it does and does not restrain, because the names invite a
+// wrong guess. Measured against a real headless run, asking the agent to
+// `rm` a file:
+//
+//	manual             denied — the file survived
+//	acceptEdits        allowed — the file was deleted
+//	auto               allowed — the file was deleted
+//	bypassPermissions  allowed, by definition
+//
+// So acceptEdits does *not* hold the shell back; it is not a middle setting
+// between "edits" and "everything". Note also that a command the harness
+// classifies as safe — `echo hi`, `ls` — runs under every mode including
+// manual, so testing with a harmless command shows no difference between any of
+// them and proves nothing.
+//
+// manual is the only mode that meaningfully restrains a delegated run: it
+// denies anything needing approval, since a headless run has nobody to ask, and
+// the denials come back in the transcript. Reach for it when you want the agent
+// to work and then stop at the first thing you would want to be asked about.
+//
+// The real control on a delegated run is therefore the consent gate — whether
+// ike starts an agent at all — rather than the mode it starts it in.
+const DefaultPermissionMode = "auto"
+
+// PermissionModes are the values the CLI accepts, in its own order.
+//
+// Validated here rather than passed straight through so a typo fails before a
+// process is started, with a message naming the alternatives. Left to the CLI,
+// `--permission-mode acceptedits` becomes an exec that dies on an unknown
+// option, surfacing as a failed run rather than a mistyped flag.
+var PermissionModes = []string{"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
+
+// ValidatePermissionMode checks a user-supplied mode for an execute run. An
+// empty mode means DefaultPermissionMode.
+func ValidatePermissionMode(mode string) error {
+	if mode == "" {
+		return nil
+	}
+	if mode == "plan" {
+		// Accepted by the CLI, but it would make a delegated run read-only —
+		// which is `ike plan`, and is confusing enough as a silent outcome to
+		// be worth naming.
+		return errors.New("--permission-mode plan would make the run read-only; " +
+			"use `ike plan <id>` to draft a plan instead")
+	}
+	if slices.Contains(PermissionModes, mode) {
+		return nil
+	}
+	return fmt.Errorf("unknown permission mode %q; expected one of %s",
+		mode, strings.Join(slices.DeleteFunc(slices.Clone(PermissionModes),
+			func(m string) bool { return m == "plan" }), ", "))
+}
 
 // binEnv overrides the binary ike runs. It exists for tests, and for anyone
 // whose claude is not on PATH or who wants to wrap it.

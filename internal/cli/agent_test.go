@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jonascript/ike/internal/agent"
 	"github.com/jonascript/ike/internal/store"
 )
 
@@ -308,7 +309,7 @@ func TestRunFlagsMatchTheMode(t *testing.T) {
 
 	mustRunCLI(t, p, "delegate", "1")
 	got := readArgs(t, argsFile)
-	if !strings.Contains(got, "--permission-mode acceptEdits") {
+	if !strings.Contains(got, "--permission-mode "+agent.DefaultPermissionMode) {
 		t.Errorf("delegate args = %q, want the default permission mode", got)
 	}
 	// The attached plan is handed to the run, or delegation would ignore the
@@ -317,9 +318,39 @@ func TestRunFlagsMatchTheMode(t *testing.T) {
 		t.Errorf("delegate args = %q, want the attached plan in the prompt", got)
 	}
 
-	mustRunCLI(t, p, "delegate", "1", "--permission-mode", "bypassPermissions")
-	if got := readArgs(t, argsFile); !strings.Contains(got, "--permission-mode bypassPermissions") {
+	mustRunCLI(t, p, "delegate", "1", "--permission-mode", "manual")
+	if got := readArgs(t, argsFile); !strings.Contains(got, "--permission-mode manual") {
 		t.Errorf("delegate args = %q, want the override", got)
+	}
+}
+
+// A mistyped mode must fail before a process starts, or it surfaces as a failed
+// run rather than as the mistyped flag it is.
+func TestBadPermissionModeIsRefusedBeforeRunning(t *testing.T) {
+	p := scratch(t)
+	dir := t.TempDir()
+	mustRunCLI(t, p, "add", "ship v2", "-q", "1")
+	mustRunCLI(t, p, "agent", "enable")
+
+	argsFile := filepath.Join(t.TempDir(), "args")
+	fakeStream(t, planStream("a plan")...)
+	t.Setenv(helperArgs, argsFile)
+
+	_, err := runCLI(t, p, "delegate", "1", "--dir", dir, "--permission-mode", "acceptedits")
+	if err == nil {
+		t.Fatal("a misspelled permission mode should be refused")
+	}
+	if !strings.Contains(err.Error(), "acceptEdits") {
+		t.Errorf("error = %q, it should list the valid modes", err)
+	}
+	if _, statErr := os.Stat(argsFile); statErr == nil {
+		t.Error("the agent was started despite the bad flag")
+	}
+
+	// plan would silently make a delegated run read-only.
+	_, err = runCLI(t, p, "delegate", "1", "--dir", dir, "--permission-mode", "plan")
+	if err == nil || !strings.Contains(err.Error(), "ike plan") {
+		t.Errorf("error = %v, want it to point at `ike plan`", err)
 	}
 }
 

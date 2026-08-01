@@ -27,9 +27,17 @@ All notable changes to ike are recorded here. The format follows
   it or the directory you ran from, so a task stays attached to its project.
   `✎` marks a task with a plan and `⣾` one an agent is working on; `esc` detaches
   from a run without stopping it, and `ctrl+c` there stops it.
+- **`--permission-mode` on `ike delegate`**, validated against the modes the CLI
+  accepts so a typo fails before a process starts rather than mid-run. Delegated
+  runs default to `auto`, the mode intended for unattended work.
 
 ### Notes
 
+- **Permission modes are not a safety ladder.** Measured against real runs,
+  `acceptEdits` and `auto` both let a delegated agent run `rm`; only `manual`
+  denied it. Use `--permission-mode manual` for a run that stops at anything it
+  would otherwise have to ask about. The consent gate, not the mode, is the
+  practical control.
 - Plan bodies are stored beside the data file as
   `tasks.json.plans/<space>/<id>.md`, not inside `tasks.json`, so they are not
   copied into every undo snapshot. They do **not** yet travel with

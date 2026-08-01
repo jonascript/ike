@@ -71,8 +71,13 @@ func newAgentSetCmd(open opener, on bool) *cobra.Command {
 			}
 			fmt.Fprintf(out, "delegation is now %s for %s\n", onOff(on), s.Path())
 			if on {
-				fmt.Fprintf(out, "Runs use --permission-mode %s by default, so the agent can edit "+
-					"files\nbut not run commands without asking.\n", agent.DefaultPermissionMode)
+				// Stated plainly rather than reassuringly. The mode names invite
+				// the guess that the default holds something back, and it does
+				// not: acceptEdits and auto both let a delegated agent run `rm`.
+				fmt.Fprintf(out, "Runs use --permission-mode %s, which lets the agent change files "+
+					"and run\ncommands in that directory. Use --permission-mode manual for a run that\n"+
+					"stops at anything it would otherwise have to ask about.\n",
+					agent.DefaultPermissionMode)
 			}
 			return nil
 		}),
@@ -213,13 +218,21 @@ func newDelegateCmd(open opener) *cobra.Command {
 		Short: "Hand a task to an agent and watch it work",
 		Long: "Runs the Claude Code CLI in the task's working directory, following the\n" +
 			"attached plan if there is one, and streams what it does.\n\n" +
-			"This needs permission, because the agent can change files:\n\n" +
+			"This needs permission, because the agent can change files and run commands:\n\n" +
 			"  ike agent enable\n\n" +
+			"Runs are unattended, so nothing can prompt you mid-run. --permission-mode\n" +
+			"manual makes the agent stop at anything it would have asked about; the\n" +
+			"default lets it work without stopping.\n\n" +
 			"The task is not completed automatically — read what it did and decide.",
 		Args: cobra.ExactArgs(1),
 		RunE: withStore(open, func(cmd *cobra.Command, args []string, s *store.Store) error {
 			id, err := parseID(args[0])
 			if err != nil {
+				return err
+			}
+			// Checked before the gate and before any process, so a typo costs
+			// nothing and says what the alternatives are.
+			if err := agent.ValidatePermissionMode(permission); err != nil {
 				return err
 			}
 			// The gate, checked before anything else happens. A delegated run
@@ -264,7 +277,8 @@ func newDelegateCmd(open opener) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&dir, "dir", "", "working directory to run in (remembered on the task)")
 	cmd.Flags().StringVar(&permission, "permission-mode", "",
-		"permission mode for the run (default "+agent.DefaultPermissionMode+")")
+		"one of acceptEdits, auto, bypassPermissions, manual, dontAsk (default "+
+			agent.DefaultPermissionMode+"; manual is the one that restrains a run)")
 	cmd.Flags().StringVar(&model, "model", "", "model to run with, e.g. opus or sonnet")
 	cmd.Flags().BoolVar(&planFirst, "plan-first", false, "draft a plan, then carry it out")
 	return cmd

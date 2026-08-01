@@ -457,6 +457,50 @@ func TestArgs(t *testing.T) {
 	}
 }
 
+func TestValidatePermissionMode(t *testing.T) {
+	for _, mode := range []string{"", "auto", "acceptEdits", "manual", "dontAsk", "bypassPermissions"} {
+		if err := ValidatePermissionMode(mode); err != nil {
+			t.Errorf("ValidatePermissionMode(%q) = %v, want it accepted", mode, err)
+		}
+	}
+
+	// A typo must fail before a process is started, naming the alternatives —
+	// left to the CLI it would die on an unknown option and look like a failed
+	// run rather than a mistyped flag.
+	err := ValidatePermissionMode("acceptedits")
+	if err == nil {
+		t.Fatal("a misspelled mode should be refused")
+	}
+	if !strings.Contains(err.Error(), "acceptEdits") {
+		t.Errorf("error = %q, it should list the valid modes", err)
+	}
+
+	// plan is a real mode, but on a delegated run it would silently make it
+	// read-only — which is what `ike plan` is for.
+	err = ValidatePermissionMode("plan")
+	if err == nil {
+		t.Fatal("plan should be refused for a delegated run")
+	}
+	if !strings.Contains(err.Error(), "ike plan") {
+		t.Errorf("error = %q, it should point at `ike plan`", err)
+	}
+	if strings.Contains(ValidatePermissionMode("nope").Error(), "plan,") {
+		t.Error("plan should not be offered as an alternative, having just been refused")
+	}
+}
+
+// The default is the mode meant for unattended work. This is a reminder more
+// than a check: it is not a restraint, and the mode names invite the opposite
+// guess — see DefaultPermissionMode's comment for the measurements.
+func TestDefaultPermissionModeIsAuto(t *testing.T) {
+	if DefaultPermissionMode != "auto" {
+		t.Errorf("DefaultPermissionMode = %q, want auto", DefaultPermissionMode)
+	}
+	if !strings.Contains(strings.Join(args(Spec{Mode: ModeExecute}), " "), "--permission-mode auto") {
+		t.Error("an execute run should carry the default mode")
+	}
+}
+
 // A planning run must not be able to change the directory it is exploring.
 func TestPlanModeIsReadOnly(t *testing.T) {
 	a := args(Spec{Mode: ModePlan, PermissionMode: "bypassPermissions"})
