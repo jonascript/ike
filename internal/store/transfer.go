@@ -18,11 +18,18 @@ import (
 // document holding just that space, which opens with `ike --file` and imports
 // with `ike space import`.
 //
-// MCP access is deliberately left off in the exported file, whatever it is here.
-// Consent is a decision about a file on a machine, and an export exists to be
-// copied elsewhere — carrying "agents may read this" along to a machine whose
-// owner never said so would be the wrong default in the one direction that
-// matters.
+// Both consent flags — MCP access and agent delegation — are deliberately left
+// off in the exported file, whatever they are here. Consent is a decision about
+// a file on a machine, and an export exists to be copied elsewhere: carrying
+// "agents may read this", still less "ike may start an agent", along to a
+// machine whose owner never said so would be the wrong default in the one
+// direction that matters. The out literal below gets this by construction, by
+// naming only the three fields an export carries.
+//
+// Plan bodies are *not* exported. They live beside the data file rather than in
+// it (see plans.go), so an export carries the tasks and their PlanAt stamps but
+// not the markdown. That is a known gap rather than a decision — a task landing
+// on the other machine will report a plan it cannot show.
 //
 // It refuses to overwrite unless force, and writes through the same atomic path
 // as any other write, so an interrupted export cannot leave a half file that
@@ -67,8 +74,8 @@ func (s *Store) ExportSpace(name, path string, force bool) (SpaceInfo, error) {
 // name. as renames a single imported space on the way in.
 //
 // Task IDs need no renumbering: next_id belongs to the space and travels with
-// it. MCP access is never carried in, for the same reason export never writes
-// it out.
+// it. Neither consent flag is ever carried in, for the same reason export never
+// writes them out.
 func (s *Store) ImportSpaces(path, as string, all bool) ([]SpaceInfo, error) {
 	p, err := CheckPath("import path", path)
 	if err != nil {

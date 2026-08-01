@@ -65,3 +65,38 @@ func CheckPath(source, p string) (string, error) {
 	}
 	return p, nil
 }
+
+// CheckDir validates a user-supplied working directory — the one a delegated
+// run executes in. It is CheckPath's rules applied one level down: where
+// CheckPath wants the *parent* of a file to exist, this wants the path itself
+// to be a directory that is already there.
+//
+// The reasoning is CheckPath's, and matters more here. A relative directory
+// resolves against whatever working directory the frontend inherited, which for
+// a task run from the TUI is wherever the terminal happened to be — so the same
+// stored value would send an agent somewhere different each time. And this
+// directory is not merely read: it is where a subprocess will edit files, so
+// "create it if it is missing" would let a typo point a run at a fresh empty
+// directory instead of failing.
+func CheckDir(source, p string) (string, error) {
+	if strings.HasPrefix(p, "~") {
+		return "", fmt.Errorf("%s=%q starts with ~, which only a shell expands; "+
+			"write the path out in full", source, p)
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("%s=%q must be an absolute path, so a task stays "+
+			"attached to the same directory whatever directory ike runs from", source, p)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("%s=%q does not exist "+
+				"(create it first, so a typo cannot invent one)", source, p)
+		}
+		return "", fmt.Errorf("%s=%q: %w", source, p, err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("%s=%q is not a directory", source, p)
+	}
+	return p, nil
+}

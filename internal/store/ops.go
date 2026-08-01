@@ -247,6 +247,40 @@ func (s *Store) MCPEnabled() (bool, error) {
 	return f.MCPEnabled, nil
 }
 
+// SetAgentEnabled turns delegation on or off for this file, and reports
+// whether the setting changed.
+//
+// Every word of SetMCPEnabled's reasoning applies: it is a permission rather
+// than an edit, so it is kept off the undo stack and no sequence of undo or
+// redo can re-open what the owner closed; it returns no Data because nothing
+// renders from it; and it goes through mutateFile rather than Mutate so that it
+// keeps working when the current space is missing, because consent is a
+// property of the file rather than of a matrix.
+//
+// It differs from the MCP gate in one way. MCP access is re-checked on every
+// read and mutation because an MCP session outlives the check — `ike mcp
+// disable` has to reach a client that is already connected. A delegated run has
+// no such lifetime: it is started by a command that just read the flag, so the
+// gate is checked once, at launch, in internal/cli. That keeps internal/agent a
+// pure runner in the way internal/mcpserver is a pure transport.
+func (s *Store) SetAgentEnabled(on bool) (changed bool, err error) {
+	_, err = s.mutateFile(func(f *File) error {
+		changed = f.AgentEnabled != on
+		f.AgentEnabled = on
+		return nil
+	})
+	return changed, err
+}
+
+// AgentEnabled reports whether ike may run an agent against this file.
+func (s *Store) AgentEnabled() (bool, error) {
+	f, err := readFile(s.path)
+	if err != nil {
+		return false, s.redact(err)
+	}
+	return f.AgentEnabled, nil
+}
+
 // Rename changes a task's title.
 func (s *Store) Rename(id int, title string) (task.Task, Data, error) {
 	title = strings.TrimSpace(title)

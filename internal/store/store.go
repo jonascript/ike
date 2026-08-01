@@ -74,11 +74,19 @@ const defaultSpace = "default"
 // consent decision about a file ("I have decided to let my agent manage this"),
 // not a property of one matrix, and a per-space gate would mean an agent
 // holding access to one space could still see the names of the others.
+// AgentEnabled is the second consent flag, and is deliberately separate from
+// MCPEnabled rather than folded into one "allow agents" setting. They are
+// different decisions with different blast radii: MCPEnabled means an agent
+// already running may read and edit this task list, while AgentEnabled means
+// ike itself may start a process that edits files in a directory. Agreeing to
+// the first is not agreeing to the second, and someone who wants their agent to
+// tidy their matrix should not thereby have granted `ike delegate`.
 type File struct {
-	Version    int              `json:"version"`
-	Current    string           `json:"current"`
-	Spaces     map[string]*Data `json:"spaces"`
-	MCPEnabled bool             `json:"mcp_enabled,omitempty"`
+	Version      int              `json:"version"`
+	Current      string           `json:"current"`
+	Spaces       map[string]*Data `json:"spaces"`
+	MCPEnabled   bool             `json:"mcp_enabled,omitempty"`
+	AgentEnabled bool             `json:"agent_enabled,omitempty"`
 }
 
 // Data is one space: a complete matrix, and the unit every operation acts on.
@@ -354,6 +362,21 @@ func (s *Store) loadResolved(space string) (File, string, *Data, error) {
 // exclusive lock, then atomically writes the whole document. It returns the
 // post-mutation data for that space.
 func (s *Store) Mutate(fn func(*Data) error) (Data, error) {
+	return s.mutateSpace(func(_ string, d *Data) error { return fn(d) })
+}
+
+// mutateSpace is Mutate with the resolved space name handed to the callback.
+//
+// It exists for the plan operations, which write a file named after the space
+// (plans.go) and so cannot use Mutate: Data.Space is derived by dataFor *after*
+// fn returns, so inside a Mutate callback it is still empty. Reading the name
+// separately would mean resolving twice, and the second resolution would be
+// outside this lock — a `ike space use` landing in between would file the plan
+// under the wrong space.
+//
+// Everything else about the two is identical, so Mutate delegates here rather
+// than the pair growing two copies of the resolve-then-render sequence.
+func (s *Store) mutateSpace(fn func(name string, d *Data) error) (Data, error) {
 	var out Data
 	_, err := s.mutateFile(func(f *File) error {
 		// Resolved inside the lock, and before fn, so a mutation naming a space
@@ -362,7 +385,7 @@ func (s *Store) Mutate(fn func(*Data) error) (Data, error) {
 		if err != nil {
 			return err
 		}
-		if err := fn(d); err != nil {
+		if err := fn(name, d); err != nil {
 			return err
 		}
 		out = f.dataFor(name, d)
@@ -507,13 +530,30 @@ func writeFileAtomic(path string, doc File) error {
 	if err := writeBackup(path); err != nil {
 		return err
 	}
+	return writeBytesAtomic(path, ".tasks-*.json", b)
+}
 
+// writeBytesAtomic replaces path with b, atomically and durably. It is the body
+// writeFileAtomic used to hold inline, lifted out so that the plan sidecars
+// (plans.go) get the same four guarantees rather than a second, untested copy
+// of them: a private temp file, fsync before the rename, an atomic rename, and
+// a best-effort directory fsync after.
+//
+// This is deliberately *not* a second write path in the sense CLAUDE.md
+// forbids. mutateFile still owns the lock, the re-read, and the gate; this owns
+// only the bytes-to-disk step, and mutateFile reaches it through
+// writeFileAtomic exactly as before. durability_test.go pins the behaviour and
+// passes unchanged, which is the check that the lift was faithful.
+//
+// pattern is the os.CreateTemp pattern, so the leftovers of an interrupted
+// write are recognisable as belonging to the file they were replacing.
+func writeBytesAtomic(path, pattern string, b []byte) error {
 	// A random name created with O_EXCL, rather than path+".tmp". IKE_DATA_FILE
 	// can point anywhere, including a shared directory, and opening a
 	// predictable name follows symlinks — so a pre-created path+".tmp" symlink
 	// would redirect this write and truncate whatever it pointed at.
 	// os.CreateTemp opens with 0600, so the replacement file is private.
-	f, err := os.CreateTemp(filepath.Dir(path), ".tasks-*.json")
+	f, err := os.CreateTemp(filepath.Dir(path), pattern)
 	if err != nil {
 		return err
 	}
