@@ -6,6 +6,8 @@ All notable changes to ike are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-01
+
 ### Added
 
 - **Delegate a task to an agent.** `ike delegate <id>` (or `D` in the TUI) runs
@@ -153,5 +155,6 @@ First release.
 - The TUI needs one more row than before (12 rather than 10), for the line that
   names the current space.
 
-[Unreleased]: https://github.com/jonascript/ike/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jonascript/ike/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jonascript/ike/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jonascript/ike/releases/tag/v0.1.0
