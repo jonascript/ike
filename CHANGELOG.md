@@ -6,7 +6,63 @@ All notable changes to ike are recorded here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Delegate a task to an agent.** `ike delegate <id>` (or `D` in the TUI) runs
+  the Claude Code CLI in the task's working directory and streams what it does.
+  It uses your own installation, so your authentication, settings, and
+  per-project `CLAUDE.md` apply. A delegated run never completes the task —
+  reading what it did and deciding is the point.
+- **Attach a plan to a task.** `ike plan <id>` (or `P`) asks an agent to draft
+  one; `--show`, `--edit`, `--from-file`, and `--clear` manage it by hand, and
+  `p` in the TUI shows it. Drafting is read-only and needs no permission.
+  `ike delegate` follows the attached plan if there is one, and `--plan-first`
+  does both in one command. Plan the work now, decide later whether to do it
+  yourself or hand it on.
+- **`ike agent enable|disable|status`**, off by default and separate from
+  `ike mcp`. Letting an agent edit your task list and letting ike start a process
+  that edits your files are different decisions. Like the MCP gate it is per data
+  file, never carried into an export, and outside undo history.
+- **Tasks remember a working directory.** The first run stores the one you give
+  it or the directory you ran from, so a task stays attached to its project.
+  `✎` marks a task with a plan and `⣾` one an agent is working on; `esc` detaches
+  from a run without stopping it, and `ctrl+c` there stops it.
+- **`--permission-mode` on `ike delegate`**, validated against the modes the CLI
+  accepts so a typo fails before a process starts rather than mid-run. Delegated
+  runs default to `auto`, the mode intended for unattended work.
+- **`--effort` on `ike plan` and `ike delegate`, with a level chosen per run.**
+  Effort controls how deeply the agent thinks and how many tools it reaches for,
+  which moves a run's wall clock more than the model does. Drafting a plan runs
+  at `high` because the thinking is the product; carrying out a plan you already
+  reviewed runs at `medium`, because re-deriving decisions the plan records buys
+  nothing; a run with no plan stays at `high`. The level and the reason are
+  printed in the run header, and `--effort` overrides both — validated, so a typo
+  fails before a process starts.
+- **Jump into a real Claude Code session on a task** with `-i` (`ike plan 3 -i`,
+  `ike delegate 3 -i`) or `c`/`C` in the TUI. ike steps aside, the agent gets the
+  terminal already briefed on the task and opened in its directory, and exiting
+  puts you back where you were.
+- **The conversation belongs to the task.** ike pins a session ID the first time
+  and resumes it on every later visit, so you can talk something through, leave,
+  and come back days later to the same history instead of re-explaining it.
+  `--new-session` starts over; `⌁` marks a task that has one waiting.
+- **A plan agreed in conversation is attached automatically.** The agent is given
+  a path to write it to, and ike picks it up as you come back — so
+  `ike plan 3 --show` reflects what you decided together.
+
+### Notes
+
+- **Permission modes are not a safety ladder.** Measured against real runs,
+  `acceptEdits` and `auto` both let a delegated agent run `rm`; only `manual`
+  denied it. Use `--permission-mode manual` for a run that stops at anything it
+  would otherwise have to ask about. The consent gate, not the mode, is the
+  practical control.
+- Plan bodies are stored beside the data file as
+  `tasks.json.plans/<space>/<id>.md`, not inside `tasks.json`, so they are not
+  copied into every undo snapshot. They do **not** yet travel with
+  `ike space export`.
+- Deleting a task leaves its plan file, so undoing the delete restores both.
+  `ike plan --prune` sweeps the orphans.
 
 ## [0.1.0] - 2026-07-29
 

@@ -138,6 +138,82 @@ func TestSanitizeDisplay(t *testing.T) {
 	}
 }
 
+func TestSanitizeBlock(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain text untouched", "buy milk", "buy milk"},
+		{"unicode untouched", "café 🚀", "café 🚀"},
+		{"newline kept", "two\nlines", "two\nlines"},
+		{"tab kept", "a\tb", "a\tb"},
+		{"crlf keeps the newline, drops the return", "a\r\nb", "a�\nb"},
+		{"escape replaced", "\x1b[31mred", "�[31mred"},
+		{"osc 52 clipboard write replaced", "\x1b]52;c;aGk=\x07", "�]52;c;aGk=�"},
+		{"nul replaced", "a\x00b", "a�b"},
+		{"del replaced", "a\x7fb", "a�b"},
+		{"c1 replaced", "a\u009bb", "a�b"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := SanitizeBlock(c.in); got != c.want {
+				t.Errorf("SanitizeBlock(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// The two sanitizers must not be interchangeable. SanitizeDisplay replaces
+// every rune below 0x20, newline included, so using it on a plan would collapse
+// the whole thing onto one line of replacement characters — and using
+// SanitizeBlock on a title would let a newline forge an extra listing row.
+func TestSanitizersDifferOnNewlines(t *testing.T) {
+	const plan = "## Goal\n\n- step one\n- step two\n"
+
+	if got := SanitizeBlock(plan); got != plan {
+		t.Errorf("SanitizeBlock mangled a plan: %q", got)
+	}
+	if got := SanitizeDisplay(plan); strings.Contains(got, "\n") {
+		t.Error("SanitizeDisplay is supposed to strip newlines; " +
+			"if that changed, SanitizeBlock has lost its reason to exist")
+	}
+}
+
+func TestValidatePlan(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{"blank is a clear, not an error", "", false},
+		{"markdown with newlines and tabs", "## Goal\n\n- a\n\tb\n", false},
+		{"at the limit", strings.Repeat("x", MaxPlanLen), false},
+		{"over the limit", strings.Repeat("x", MaxPlanLen+1), true},
+		{"counts runes, not bytes", strings.Repeat("é", MaxPlanLen), false},
+		{"escape rejected", "plan\x1b[2Kwith escape", true},
+		{"carriage return rejected", "plan\rwith return", true},
+		{"nul rejected", "plan\x00", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := ValidatePlan(c.body); (err != nil) != c.wantErr {
+				t.Errorf("ValidatePlan() error = %v, wantErr %v", err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestHasPlan(t *testing.T) {
+	when := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	if (Task{ID: 1}).HasPlan() {
+		t.Error("a task with no PlanAt has no plan")
+	}
+	if !(Task{ID: 1, PlanAt: &when}).HasPlan() {
+		t.Error("a task with PlanAt has a plan")
+	}
+}
+
 // Validate rejects control characters on the way in, so a title only carries
 // them if it predates that check or was written by something other than ike.
 // DisplayTitle is the matching guarantee that such a title still cannot

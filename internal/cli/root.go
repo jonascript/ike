@@ -97,6 +97,9 @@ func NewRootCmd(outer opener) *cobra.Command {
 		newLabelCmd(open),
 		newArchiveCmd(open),
 		newMCPCmd(open),
+		newAgentCmd(open),
+		newPlanCmd(open),
+		newDelegateCmd(open),
 		// The space commands name their target as an argument, so they take the
 		// opener without --space applied — but they still honor --file, since
 		// listing or importing into another document is exactly the point.
