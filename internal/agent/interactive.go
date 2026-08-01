@@ -49,6 +49,10 @@ type Session struct {
 	PermissionMode string
 	// Model optionally overrides the model.
 	Model string
+	// Effort optionally overrides how hard the agent works, as on a Spec. It is
+	// resolved the same way, so a conversation about a task that already has a
+	// plan starts where a delegated run on it would.
+	Effort string
 }
 
 // NewSessionID mints a conversation ID.
@@ -87,6 +91,9 @@ func InteractiveCommand(ctx context.Context, s Session) (*exec.Cmd, error) {
 	if err := ValidatePermissionMode(s.PermissionMode); err != nil {
 		return nil, err
 	}
+	if err := ValidateEffort(s.Effort); err != nil {
+		return nil, err
+	}
 
 	cmd := exec.CommandContext(ctx, bin, sessionArgs(s)...)
 	cmd.Dir = s.Dir
@@ -123,6 +130,8 @@ func sessionArgs(s Session) []string {
 	if s.Model != "" {
 		out = append(out, "--model", s.Model)
 	}
+	level, _ := ResolveEffort(s.Mode, s.Effort, s.Plan != "")
+	out = append(out, "--effort", level)
 	return out
 }
 

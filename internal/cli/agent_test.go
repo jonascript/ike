@@ -574,6 +574,85 @@ func TestInteractiveDelegateStillNeedsTheGate(t *testing.T) {
 }
 
 // --plan-first chains the two runs, so one command drafts and then acts.
+// ike chooses an effort level from what the run has to work with, and the run
+// has to actually use it: a header that says one thing while the agent runs at
+// another is worse than no header.
+func TestEffortIsRecommendedThenOverridable(t *testing.T) {
+	p := scratch(t)
+	dir := t.TempDir()
+	mustRunCLI(t, p, "add", "ship v2", "-q", "1")
+	mustRunCLI(t, p, "agent", "enable")
+	fakeStream(t, planStream("## The drafted plan")...)
+
+	argsFile := filepath.Join(t.TempDir(), "args")
+	t.Setenv(helperArgs, argsFile)
+
+	// Planning is the reasoning, so it does not step down.
+	out := mustRunCLI(t, p, "plan", "1", "--dir", dir)
+	if !strings.Contains(out, "effort high — drafting a plan") {
+		t.Errorf("plan header = %q, want the level and the reason", out)
+	}
+	if got := readArgs(t, argsFile); !strings.Contains(got, "--effort high") {
+		t.Errorf("planning args = %q, want the recommendation on the command line", got)
+	}
+
+	// That run attached a plan, so delegating now is follow-through.
+	out = mustRunCLI(t, p, "delegate", "1")
+	if !strings.Contains(out, "effort medium — following an attached plan") {
+		t.Errorf("delegate header = %q, want the step down and its reason", out)
+	}
+	if got := readArgs(t, argsFile); !strings.Contains(got, "--effort medium") {
+		t.Errorf("delegate args = %q, want the recommendation on the command line", got)
+	}
+
+	// With the plan cleared there is nothing to follow, so the run has to work
+	// the approach out as well as do it.
+	mustRunCLI(t, p, "plan", "1", "--clear")
+	out = mustRunCLI(t, p, "delegate", "1")
+	if !strings.Contains(out, "effort high — no plan to follow") {
+		t.Errorf("delegate header = %q, want the reason for staying high", out)
+	}
+
+	// An explicit level wins, and is reported without a reason — there is
+	// nothing to explain about a flag somebody typed.
+	out = mustRunCLI(t, p, "delegate", "1", "--effort", "low")
+	if !strings.Contains(out, "effort low") || strings.Contains(out, "effort low —") {
+		t.Errorf("delegate header = %q, want the bare level for an explicit flag", out)
+	}
+	if got := readArgs(t, argsFile); !strings.Contains(got, "--effort low") {
+		t.Errorf("delegate args = %q, want the override", got)
+	}
+}
+
+// A mistyped level must fail before a process starts, for the same reason a
+// mistyped permission mode does.
+func TestBadEffortIsRefusedBeforeRunning(t *testing.T) {
+	p := scratch(t)
+	dir := t.TempDir()
+	mustRunCLI(t, p, "add", "ship v2", "-q", "1")
+	mustRunCLI(t, p, "agent", "enable")
+
+	argsFile := filepath.Join(t.TempDir(), "args")
+	fakeStream(t, planStream("a plan")...)
+	t.Setenv(helperArgs, argsFile)
+
+	for _, args := range [][]string{
+		{"delegate", "1", "--dir", dir, "--effort", "mid"},
+		{"plan", "1", "--dir", dir, "--effort", "mid"},
+	} {
+		_, err := runCLI(t, p, args...)
+		if err == nil {
+			t.Fatalf("%v: a misspelled effort level should be refused", args)
+		}
+		if !strings.Contains(err.Error(), "medium") {
+			t.Errorf("%v: error = %q, it should list the valid levels", args, err)
+		}
+	}
+	if _, statErr := os.Stat(argsFile); statErr == nil {
+		t.Error("the agent was started despite the bad flag")
+	}
+}
+
 func TestPlanFirstChainsBothRuns(t *testing.T) {
 	p := scratch(t)
 	dir := t.TempDir()

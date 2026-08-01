@@ -120,6 +120,9 @@ type Spec struct {
 	PermissionMode string
 	// Model optionally overrides the model, e.g. "opus" or "sonnet".
 	Model string
+	// Effort optionally overrides how hard the agent works. Empty lets
+	// ResolveEffort choose from the mode and whether a plan is attached.
+	Effort string
 }
 
 // Run is a live agent process.
@@ -294,6 +297,12 @@ func args(s Spec) []string {
 	if s.Model != "" {
 		out = append(out, "--model", s.Model)
 	}
+	// Always passed, because ike always has an answer: ResolveEffort falls back
+	// to a recommendation rather than to "unset". Leaving it off for a run with
+	// no --effort would mean the plan/execute distinction silently stopped
+	// mattering, which is the point of choosing at all.
+	level, _ := ResolveEffort(s.Mode, s.Effort, s.Plan != "")
+	out = append(out, "--effort", level)
 	return out
 }
 

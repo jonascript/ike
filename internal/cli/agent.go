@@ -134,7 +134,8 @@ func newPlanCmd(open opener) *cobra.Command {
 	var (
 		show, edit, clear, prune bool
 		interactive, fresh       bool
-		fromFile, dir, model     string
+		fromFile, dir            string
+		model, effort            string
 	)
 	cmd := &cobra.Command{
 		Use:   "plan <id>",
@@ -164,6 +165,11 @@ func newPlanCmd(open opener) *cobra.Command {
 			}
 			id, err := parseID(args[0])
 			if err != nil {
+				return err
+			}
+			// Checked up front, so a typo costs nothing even on the flag
+			// combinations below that never start an agent at all.
+			if err := agent.ValidateEffort(effort); err != nil {
 				return err
 			}
 
@@ -200,10 +206,10 @@ func newPlanCmd(open opener) *cobra.Command {
 
 			case interactive:
 				return session(cmd, s, id, agent.ModePlan,
-					sessionOpts{dir: dir, model: model, fresh: fresh})
+					runOpts{dir: dir, model: model, effort: effort, fresh: fresh})
 			}
 
-			return draftPlan(cmd, s, id, dir, model)
+			return draftPlan(cmd, s, id, runOpts{dir: dir, model: model, effort: effort})
 		}),
 	}
 	cmd.Flags().BoolVar(&show, "show", false, "print the attached plan")
@@ -213,6 +219,7 @@ func newPlanCmd(open opener) *cobra.Command {
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "attach a plan written elsewhere")
 	cmd.Flags().StringVar(&dir, "dir", "", "working directory to explore (remembered on the task)")
 	cmd.Flags().StringVar(&model, "model", "", "model to draft with, e.g. opus or sonnet")
+	cmd.Flags().StringVar(&effort, "effort", "", effortFlagHelp)
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false,
 		"open a Claude Code session and talk the plan through, resuming last time's")
 	cmd.Flags().BoolVar(&fresh, "new-session", false,
@@ -222,7 +229,8 @@ func newPlanCmd(open opener) *cobra.Command {
 
 func newDelegateCmd(open opener) *cobra.Command {
 	var (
-		dir, permission, model   string
+		dir, permission          string
+		model, effort            string
 		planFirst                bool
 		interactive, freshSesson bool
 	)
@@ -251,6 +259,9 @@ func newDelegateCmd(open opener) *cobra.Command {
 			if err := agent.ValidatePermissionMode(permission); err != nil {
 				return err
 			}
+			if err := agent.ValidateEffort(effort); err != nil {
+				return err
+			}
 			// The gate, checked before anything else happens. A delegated run
 			// has no session to revoke mid-flight the way an MCP client does,
 			// so unlike the MCP gate this one check is the whole of it.
@@ -266,13 +277,14 @@ func newDelegateCmd(open opener) *cobra.Command {
 			if interactive {
 				// Supervised: you are at the terminal, so the agent can ask
 				// rather than deciding on your behalf.
-				return session(cmd, s, id, agent.ModeExecute, sessionOpts{
-					dir: dir, permission: permission, model: model, fresh: freshSesson,
+				return session(cmd, s, id, agent.ModeExecute, runOpts{
+					dir: dir, permission: permission, model: model,
+					effort: effort, fresh: freshSesson,
 				})
 			}
 
 			if planFirst {
-				if err := draftPlan(cmd, s, id, dir, model); err != nil {
+				if err := draftPlan(cmd, s, id, runOpts{dir: dir, model: model, effort: effort}); err != nil {
 					return err
 				}
 				dir = "" // already resolved and stored by the planning run
@@ -288,6 +300,13 @@ func newDelegateCmd(open opener) *cobra.Command {
 				return err
 			}
 
+			// The header before the transcript, so what ike chose on your
+			// behalf is on screen next to the work it produced rather than
+			// only inferrable from how long the run took.
+			fmt.Fprintf(cmd.OutOrStdout(), "delegating %d  %s\n  in %s\n%s\n\n",
+				t.ID, t.DisplayTitle(), t.Dir,
+				effortNote(agent.ModeExecute, effort, plan != ""))
+
 			return stream(cmd, agent.Spec{
 				Mode:           agent.ModeExecute,
 				Title:          t.Title,
@@ -296,6 +315,7 @@ func newDelegateCmd(open opener) *cobra.Command {
 				Dir:            t.Dir,
 				PermissionMode: permission,
 				Model:          model,
+				Effort:         effort,
 			})
 		}),
 	}
@@ -304,6 +324,7 @@ func newDelegateCmd(open opener) *cobra.Command {
 		"one of acceptEdits, auto, bypassPermissions, manual, dontAsk (default "+
 			agent.DefaultPermissionMode+"; manual is the one that restrains a run)")
 	cmd.Flags().StringVar(&model, "model", "", "model to run with, e.g. opus or sonnet")
+	cmd.Flags().StringVar(&effort, "effort", "", effortFlagHelp)
 	cmd.Flags().BoolVar(&planFirst, "plan-first", false, "draft a plan, then carry it out")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false,
 		"open a Claude Code session and supervise the work, resuming last time's")
@@ -318,7 +339,7 @@ func newDelegateCmd(open opener) *cobra.Command {
 // The conversation is pinned to the task: the ID is generated and stored before
 // the agent starts, so even a session that ends badly is resumable, and every
 // later visit continues it rather than briefing a new agent from scratch.
-func session(cmd *cobra.Command, s *store.Store, id int, mode agent.Mode, opts sessionOpts) error {
+func session(cmd *cobra.Command, s *store.Store, id int, mode agent.Mode, opts runOpts) error {
 	t, plan, err := prepare(cmd, s, id, opts.dir)
 	if err != nil {
 		return err
@@ -360,6 +381,7 @@ func session(cmd *cobra.Command, s *store.Store, id int, mode agent.Mode, opts s
 		DraftPath:      draft,
 		PermissionMode: opts.permission,
 		Model:          opts.model,
+		Effort:         opts.effort,
 	})
 	if err != nil {
 		return err
@@ -372,8 +394,8 @@ func session(cmd *cobra.Command, s *store.Store, id int, mode agent.Mode, opts s
 	if !resume {
 		verb = "starting a conversation about"
 	}
-	fmt.Fprintf(out, "%s %d  %s\n  in %s\n  come back to it any time with the same command\n\n",
-		verb, t.ID, t.DisplayTitle(), t.Dir)
+	fmt.Fprintf(out, "%s %d  %s\n  in %s\n%s\n  come back to it any time with the same command\n\n",
+		verb, t.ID, t.DisplayTitle(), t.Dir, effortNote(mode, opts.effort, plan != ""))
 
 	if err := c.Run(); err != nil {
 		// An agent you quit out of is the ordinary ending, and exit status is
@@ -384,12 +406,39 @@ func session(cmd *cobra.Command, s *store.Store, id int, mode agent.Mode, opts s
 	return adoptDraft(cmd, s, id)
 }
 
-// sessionOpts are the flags a session shares with a streamed run.
-type sessionOpts struct {
+// runOpts are the flags a session shares with a streamed run. Passed as one
+// value rather than as a growing tail of strings, because dir, model and effort
+// are all strings and a caller that transposes two of them still compiles.
+//
+// Not every field applies to every caller — a planning run has no permission
+// mode to set and no conversation to resume — but the alternative is a second
+// struct that has to be kept in step with this one.
+type runOpts struct {
 	dir        string
 	permission string
 	model      string
+	effort     string
 	fresh      bool
+}
+
+// effortFlagHelp describes --effort. It names the levels and says what ike does
+// with the flag left off, since that is the case almost every run is in.
+const effortFlagHelp = "how hard the agent works: low, medium, high, xhigh, max " +
+	"(default: high to plan, medium to carry out an attached plan)"
+
+// effortNote is the run header's line about effort: what ike settled on and,
+// when ike chose it rather than being told, why.
+//
+// Printed on every run rather than only when ike guessed, so the level is
+// always a fact on screen instead of something to be reconstructed from the
+// flags. It resolves through the same ResolveEffort the command line is built
+// from, so the header cannot claim one thing while the agent runs at another.
+func effortNote(mode agent.Mode, requested string, hasPlan bool) string {
+	level, why := agent.ResolveEffort(mode, requested, hasPlan)
+	if why == "" {
+		return "  · effort " + level
+	}
+	return "  · effort " + level + " — " + why
 }
 
 // adoptDraft attaches a plan the agent left behind, if it left one.
@@ -410,8 +459,8 @@ func adoptDraft(cmd *cobra.Command, s *store.Store, id int) error {
 //
 // It needs no gate: the run is --permission-mode plan, so it can read the
 // working directory but not change it.
-func draftPlan(cmd *cobra.Command, s *store.Store, id int, dir, model string) error {
-	t, existing, err := prepare(cmd, s, id, dir)
+func draftPlan(cmd *cobra.Command, s *store.Store, id int, opts runOpts) error {
+	t, existing, err := prepare(cmd, s, id, opts.dir)
 	if err != nil {
 		return err
 	}
@@ -421,7 +470,8 @@ func draftPlan(cmd *cobra.Command, s *store.Store, id int, dir, model string) er
 	}
 
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "planning %d  %s\n  in %s\n\n", t.ID, t.DisplayTitle(), t.Dir)
+	fmt.Fprintf(out, "planning %d  %s\n  in %s\n%s\n\n", t.ID, t.DisplayTitle(), t.Dir,
+		effortNote(agent.ModePlan, opts.effort, existing != ""))
 
 	// The plan is the run's final result rather than everything it said, so it
 	// is captured here instead of being reassembled from the transcript.
@@ -432,7 +482,8 @@ func draftPlan(cmd *cobra.Command, s *store.Store, id int, dir, model string) er
 		Quadrant: d.Labels.Of(t.Quadrant),
 		Plan:     existing,
 		Dir:      t.Dir,
-		Model:    model,
+		Model:    opts.model,
+		Effort:   opts.effort,
 	}, func(e agent.Event) {
 		if e.Kind == agent.KindResult && !e.IsError {
 			plan = e.Text

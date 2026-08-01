@@ -30,6 +30,14 @@ All notable changes to ike are recorded here. The format follows
 - **`--permission-mode` on `ike delegate`**, validated against the modes the CLI
   accepts so a typo fails before a process starts rather than mid-run. Delegated
   runs default to `auto`, the mode intended for unattended work.
+- **`--effort` on `ike plan` and `ike delegate`, with a level chosen per run.**
+  Effort controls how deeply the agent thinks and how many tools it reaches for,
+  which moves a run's wall clock more than the model does. Drafting a plan runs
+  at `high` because the thinking is the product; carrying out a plan you already
+  reviewed runs at `medium`, because re-deriving decisions the plan records buys
+  nothing; a run with no plan stays at `high`. The level and the reason are
+  printed in the run header, and `--effort` overrides both — validated, so a typo
+  fails before a process starts.
 - **Jump into a real Claude Code session on a task** with `-i` (`ike plan 3 -i`,
   `ike delegate 3 -i`) or `c`/`C` in the TUI. ike steps aside, the agent gets the
   terminal already briefed on the task and opened in its directory, and exiting

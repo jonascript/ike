@@ -336,6 +336,7 @@ ike delegate 3 -i                # supervise it in a real session instead
 ike delegate 3 --plan-first      # draft a plan, then carry it out
 ike delegate 3 --dir ~/dev/thing # set the working directory
 ike delegate 3 --model opus      # choose a model
+ike delegate 3 --effort max      # choose how hard it works
 ```
 
 `-i` works here too, and resumes the same per-task conversation: the agent does
@@ -351,6 +352,38 @@ an export, and is not part of undo history — no sequence of `ike undo` can
 re-open it.
 
 **A delegated run never completes the task** — read what it did and decide.
+
+### How hard the agent works
+
+Effort controls how deeply the agent thinks, how many tools it reaches for, and
+how much it says on the way. It usually matters more than the model: a run's wall
+clock is dominated by how many turns it takes, and effort is what moves that.
+
+ike picks a level per run rather than using one setting for everything, because
+the two things it delegates are not the same shape of work — and it prints what
+it chose, and why, in the run header:
+
+| run | effort | why |
+|---|---|---|
+| `ike plan 3` | `high` | drafting a plan — the thinking *is* the product |
+| `ike delegate 3` with a plan attached | `medium` | following an attached plan; the approach is already decided and reviewed |
+| `ike delegate 3` with no plan | `high` | no plan to follow, so it has to work the approach out as well as do it |
+
+```
+$ ike delegate 3
+delegating 3  Fix the flaky reorder test
+  in /Users/you/dev/thing
+  · effort medium — following an attached plan
+```
+
+`--effort low|medium|high|xhigh|max` overrides it, on both `ike plan` and
+`ike delegate`, and the header then just states the level. A mistyped level fails
+before any process starts. Attaching a plan is therefore also the cheapest way to
+make a delegated run cheaper: the run stops paying to re-derive decisions the
+plan already records.
+
+The TUI has no flag for this and always uses the recommendation, shown in the
+same line at the top of the run view.
 
 ### What a delegated run is allowed to do
 

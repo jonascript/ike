@@ -357,6 +357,51 @@ func TestQuittingStopsALiveRun(t *testing.T) {
 	}
 }
 
+// The TUI has no --effort of its own, so what it shows is always ike's own
+// choice — which makes the header the only place a person can see it.
+func TestRunViewShowsTheChosenEffort(t *testing.T) {
+	m, s := testModel(t)
+	s.Add("ship v2", task.Do)
+	if _, err := s.SetAgentEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	// No binary, so the run fails to start — but startAgent settles the effort
+	// before it gets that far, which is all this is about.
+	t.Setenv("IKE_AGENT_CMD", "")
+	t.Setenv("PATH", t.TempDir())
+	m.refreshFromStore(t)
+
+	m = press(t, m, "D")
+	if m.run == nil {
+		t.Fatal("D should have begun a run")
+	}
+	if m.run.effort != "high" || m.run.why != "no plan to follow" {
+		t.Errorf("effort = %q (%q), want high with the no-plan reason", m.run.effort, m.run.why)
+	}
+	if out := m.render(); !strings.Contains(out, "effort high — no plan to follow") {
+		t.Errorf("run view = %q, want the effort line in the header", out)
+	}
+
+	// Attach a plan and the next run is follow-through instead.
+	if _, _, err := s.SetPlan(1, "## step one"); err != nil {
+		t.Fatal(err)
+	}
+	m.run = nil
+	m.mode = modeNormal
+	m.refreshFromStore(t)
+
+	m = press(t, m, "D")
+	if m.run == nil {
+		t.Fatal("D should have begun a second run")
+	}
+	if m.run.effort != "medium" || m.run.why != "following an attached plan" {
+		t.Errorf("effort = %q (%q), want the step down for an attached plan", m.run.effort, m.run.why)
+	}
+	if out := m.render(); !strings.Contains(out, "effort medium — following an attached plan") {
+		t.Errorf("run view = %q, want the effort line in the header", out)
+	}
+}
+
 // A second run while one is going is refused rather than silently replacing it.
 func TestASecondRunIsRefused(t *testing.T) {
 	m, s := testModel(t)

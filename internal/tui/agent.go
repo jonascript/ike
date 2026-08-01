@@ -72,6 +72,8 @@ type run struct {
 	plan    string // the drafted plan, for a ModePlan run
 	cost    float64
 	model   string
+	effort  string // the level this run settled on, and why, for the header
+	why     string
 	started bool
 }
 
@@ -114,11 +116,17 @@ func (m *Model) startAgent(mode agent.Mode) tea.Cmd {
 
 	m.runSeq++
 	seq := m.runSeq
+	// The TUI has no --effort of its own, so this is always the recommendation.
+	// Resolved here rather than read back off the spec so the header can say why
+	// as well as what: the reason is not part of a command line.
+	level, why := agent.ResolveEffort(mode, "", plan != "")
 	m.run = &run{
 		seq:    seq,
 		taskID: t.ID,
 		title:  t.DisplayTitle(),
 		mode:   mode,
+		effort: level,
+		why:    why,
 		follow: true,
 	}
 	m.mode = modeRun
@@ -494,9 +502,13 @@ func (m Model) renderRun() string {
 		state = "done"
 	}
 
+	// renderList derives the chrome it has to pay for from this header, so
+	// adding the effort line here does not cost the transcript a row off the
+	// bottom of the terminal.
+	dim := lipgloss.NewStyle().Foreground(m.dimColor())
 	header := []string{
-		lipgloss.NewStyle().Foreground(m.dimColor()).
-			Render(fmt.Sprintf("%s · %s", state, r.title)),
+		dim.Render(fmt.Sprintf("%s · %s", state, r.title)),
+		dim.Render(effortNote(r.effort, r.why)),
 		"",
 	}
 
@@ -600,3 +612,12 @@ func firstLine(s string) string {
 }
 
 func wrapNote(s string) string { return "  ! " + firstLine(s) }
+
+// effortNote says what the run settled on and why, matching the line the CLI
+// prints so the two frontends describe a run the same way.
+func effortNote(level, why string) string {
+	if why == "" {
+		return "effort " + level
+	}
+	return "effort " + level + " — " + why
+}
