@@ -151,13 +151,18 @@ Run `ike` with no arguments.
 | `s` | space picker (`enter` switch, `n` new, `r` rename, `d` twice delete) |
 | `]` / `[` | next / previous space |
 | `f` | data file picker (`o` there types a path) |
+| `p` | show the plan attached to the selected task |
+| `P` | ask an agent to draft a plan |
+| `D` | delegate the task to an agent, or reattach to a run already going |
 | `?` | toggle help |
 | `q` | quit |
 
 Changes made by the CLI or MCP server while the TUI is open appear within ~2 seconds.
 
 A dim `◆ mcp` marker sits in the footer while AI agent access is enabled; see
-[MCP](#mcp). No marker means nothing but you can reach the matrix.
+[MCP](#mcp). No marker means nothing but you can reach the matrix. A `✎` after a
+title means the task has a plan attached; `⣾` means an agent is working on it
+right now (see [Delegating a task](#delegating-a-task)).
 
 ## CLI
 
@@ -176,6 +181,10 @@ ike redo                        # re-apply the last undone change
 ike label                       # show the four quadrant headings
 ike label 1 "Firefighting"      # rename a quadrant
 ike label 1 --reset             # restore its default name
+
+ike plan 3                      # draft a plan for task 3: see "Delegating a task"
+ike delegate 3                  # hand task 3 to an agent
+ike agent status                # whether ike may run an agent
 
 ike space                       # spaces: see "Spaces" below
 ike list -s work                # act on one space just this once
@@ -268,6 +277,78 @@ Or in any MCP client config:
 ```json
 { "mcpServers": { "ike": { "command": "ike", "args": ["mcp"] } } }
 ```
+
+## Delegating a task
+
+MCP lets an agent manage your matrix. This is the other direction: handing a
+task *to* an agent. It runs the [Claude Code](https://claude.com/claude-code)
+CLI — your own installation, so your authentication, settings, and per-project
+`CLAUDE.md` all apply.
+
+There are two steps, and you can stop after the first.
+
+**Draft a plan.** `ike plan 3` (or `P` in the TUI) asks an agent to explore the
+task's working directory and write a plan, which is then attached to the task.
+This is read-only — it runs in Claude Code's plan mode and cannot change
+anything — so it needs no permission.
+
+```sh
+ike plan 3                       # draft one, streaming as it works
+ike plan 3 --show                # print it
+ike plan 3 --edit                # open it in $EDITOR
+ike plan 3 --from-file notes.md  # attach one you wrote yourself
+ike plan 3 --clear               # remove it
+```
+
+The plan is yours. Read it, argue with it, edit it — then either do the work
+yourself, or hand it on.
+
+**Hand it on.** `ike delegate 3` (or `D`) runs an agent that carries the task
+out, following the attached plan if there is one.
+
+```sh
+ike agent enable                 # required before any delegated run
+ike delegate 3                   # follow the attached plan
+ike delegate 3 --plan-first      # draft a plan, then carry it out
+ike delegate 3 --dir ~/dev/thing # set the working directory
+ike delegate 3 --model opus      # choose a model
+```
+
+**Delegation is off by default**, separately from MCP access. Letting an agent
+edit your task list and letting ike start a process that edits your *files* are
+different decisions, so agreeing to one is not agreeing to the other. Like the
+MCP gate, the setting is per data file, survives restarts, is never carried into
+an export, and is not part of undo history — no sequence of `ike undo` can
+re-open it.
+
+Runs use `--permission-mode acceptEdits`, so the agent reads and writes files
+freely but does not get your shell without asking; override with
+`--permission-mode`. **A delegated run never completes the task** — read what it
+did and decide.
+
+Each task remembers a **working directory**. The first run stores the one you
+give it, or the directory you ran from, so `cd ~/dev/thing && ike delegate 3`
+does the obvious thing and later runs go back to the same project wherever you
+start them.
+
+In the TUI a run takes over the screen and streams. `esc` detaches and the run
+keeps going — the task shows `⣾` in the matrix and `D` on it reattaches. `ctrl+c`
+in the run view stops the run. Quitting ike stops it too: the agent is a child
+process, and ike will not leave one running with nothing reading it.
+
+> **The same caveat as MCP.** The gate is a consent mechanism, not a security
+> boundary. It decides whether *ike* starts an agent; it does nothing about what
+> that agent then does, which is governed by Claude Code's own permissions. And
+> anyone who can run commands as you can run `claude` directly.
+
+Plans are stored beside the data file, one file per task, in
+`tasks.json.plans/<space>/<id>.md` — not inside `tasks.json`, so a few KB of
+markdown per task is not copied into every undo snapshot. Deleting a task leaves
+its plan, so undoing the delete brings both back; `ike plan --prune` sweeps the
+ones left behind. Note that plans do **not** travel with `ike space export` yet.
+
+Delegation needs `claude` on your `PATH`; `ike agent status` says whether it
+found it. Set `IKE_AGENT_CMD` to point at a different binary or a wrapper.
 
 ## Data
 

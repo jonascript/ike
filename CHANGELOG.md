@@ -6,7 +6,36 @@ All notable changes to ike are recorded here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Delegate a task to an agent.** `ike delegate <id>` (or `D` in the TUI) runs
+  the Claude Code CLI in the task's working directory and streams what it does.
+  It uses your own installation, so your authentication, settings, and
+  per-project `CLAUDE.md` apply. A delegated run never completes the task —
+  reading what it did and deciding is the point.
+- **Attach a plan to a task.** `ike plan <id>` (or `P`) asks an agent to draft
+  one; `--show`, `--edit`, `--from-file`, and `--clear` manage it by hand, and
+  `p` in the TUI shows it. Drafting is read-only and needs no permission.
+  `ike delegate` follows the attached plan if there is one, and `--plan-first`
+  does both in one command. Plan the work now, decide later whether to do it
+  yourself or hand it on.
+- **`ike agent enable|disable|status`**, off by default and separate from
+  `ike mcp`. Letting an agent edit your task list and letting ike start a process
+  that edits your files are different decisions. Like the MCP gate it is per data
+  file, never carried into an export, and outside undo history.
+- **Tasks remember a working directory.** The first run stores the one you give
+  it or the directory you ran from, so a task stays attached to its project.
+  `✎` marks a task with a plan and `⣾` one an agent is working on; `esc` detaches
+  from a run without stopping it, and `ctrl+c` there stops it.
+
+### Notes
+
+- Plan bodies are stored beside the data file as
+  `tasks.json.plans/<space>/<id>.md`, not inside `tasks.json`, so they are not
+  copied into every undo snapshot. They do **not** yet travel with
+  `ike space export`.
+- Deleting a task leaves its plan file, so undoing the delete restores both.
+  `ike plan --prune` sweeps the orphans.
 
 ## [0.1.0] - 2026-07-29
 
