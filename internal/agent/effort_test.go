@@ -117,6 +117,12 @@ func TestEffortReachesTheCommandLine(t *testing.T) {
 // A bad level must be caught where a session is built, the way a bad permission
 // mode is: InteractiveCommand is the point past which the terminal is gone.
 func TestInteractiveCommandRefusesABadEffort(t *testing.T) {
+	// Stubbed because InteractiveCommand looks for the binary before it
+	// validates anything, so without this the test passes or fails on whether
+	// the machine running it happens to have claude installed — and would be
+	// asserting on lookBinary's message rather than on the effort level.
+	t.Setenv(binEnv, "/nonexistent/claude")
+
 	_, err := InteractiveCommand(t.Context(), Session{
 		Mode:      ModeExecute,
 		Dir:       t.TempDir(),
