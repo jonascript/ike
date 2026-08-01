@@ -84,7 +84,7 @@ type wire struct {
 // parseLine turns one line of the agent's stdout into zero or more events.
 //
 // Zero is the common case for lines ike does not care about, and that is the
-// important behaviour: an unrecognised type is skipped, never an error. The
+// important behavior: an unrecognized type is skipped, never an error. The
 // stream carries event types this package has never heard of — `rate_limit_event`
 // and `system/thinking_tokens` both appear in an ordinary run — and the CLI adds
 // more between releases. A parser that rejected the unfamiliar would break on a

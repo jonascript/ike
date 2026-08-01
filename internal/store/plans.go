@@ -246,7 +246,7 @@ func (s *Store) PrunePlans() (int, error) {
 }
 
 // planFileID parses "<id>.md" back into a task ID. Anything else in the
-// directory is left alone — a sweep that deleted files it did not recognise
+// directory is left alone — a sweep that deleted files it did not recognize
 // would be a poor thing to point at a directory inside someone's data folder.
 func planFileID(name string) (int, bool) {
 	base, ok := strings.CutSuffix(name, ".md")

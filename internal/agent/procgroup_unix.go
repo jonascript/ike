@@ -8,7 +8,7 @@ import (
 )
 
 // setProcessGroup puts the agent in a process group of its own, so the whole
-// tree can be signalled at once.
+// tree can be signaled at once.
 func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }

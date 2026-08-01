@@ -173,7 +173,7 @@ func SanitizeDisplay(s string) string {
 // every rune below 0x20, which includes '\n' — running a plan through it turns
 // each line break into U+FFFD and renders the whole plan as one long line. The
 // two are separate functions rather than one with a flag so that neither call
-// site can pick the wrong behaviour silently: a single-line field that used
+// site can pick the wrong behavior silently: a single-line field that used
 // SanitizeBlock by mistake would let a newline forge an extra row, which is the
 // exact failure firstControlChar's comment describes.
 //

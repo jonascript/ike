@@ -74,6 +74,7 @@ const defaultSpace = "default"
 // consent decision about a file ("I have decided to let my agent manage this"),
 // not a property of one matrix, and a per-space gate would mean an agent
 // holding access to one space could still see the names of the others.
+//
 // AgentEnabled is the second consent flag, and is deliberately separate from
 // MCPEnabled rather than folded into one "allow agents" setting. They are
 // different decisions with different blast radii: MCPEnabled means an agent
@@ -542,11 +543,11 @@ func writeFileAtomic(path string, doc File) error {
 // This is deliberately *not* a second write path in the sense CLAUDE.md
 // forbids. mutateFile still owns the lock, the re-read, and the gate; this owns
 // only the bytes-to-disk step, and mutateFile reaches it through
-// writeFileAtomic exactly as before. durability_test.go pins the behaviour and
+// writeFileAtomic exactly as before. durability_test.go pins the behavior and
 // passes unchanged, which is the check that the lift was faithful.
 //
 // pattern is the os.CreateTemp pattern, so the leftovers of an interrupted
-// write are recognisable as belonging to the file they were replacing.
+// write are recognizable as belonging to the file they were replacing.
 func writeBytesAtomic(path, pattern string, b []byte) error {
 	// A random name created with O_EXCL, rather than path+".tmp". IKE_DATA_FILE
 	// can point anywhere, including a shared directory, and opening a

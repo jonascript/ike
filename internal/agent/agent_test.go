@@ -365,7 +365,7 @@ func TestCancelStopsTheRun(t *testing.T) {
 		r.Cancel()
 	}()
 
-	// The channel closing is the contract: a cancelled run ends its stream.
+	// The channel closing is the contract: a canceled run ends its stream.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

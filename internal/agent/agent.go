@@ -171,7 +171,7 @@ func (r *Run) stream(stdout io.ReadCloser) {
 		}
 	}
 	// A scan error is worth reporting, but not if it is just the pipe closing
-	// because the run was cancelled.
+	// because the run was canceled.
 	if err := sc.Err(); err != nil && !sawResult {
 		r.events <- Event{Kind: KindError, Text: clean("reading the agent's output: " + err.Error())}
 	}
@@ -254,6 +254,10 @@ func lookBinary() (string, error) {
 	if err != nil {
 		// The bare LookPath error is "executable file not found in $PATH",
 		// which does not tell someone who has never installed it what to do.
+		// Multi-line and sentence-punctuated against the usual convention for
+		// error strings, for the reason mcpDisabledMsg gives: the whole value
+		// of the message is the command it names.
+		//nolint:staticcheck // ST1005: formatted for a human, not a caller.
 		return "", fmt.Errorf("ike delegates by running the Claude Code CLI, and `claude` "+
 			"is not on your PATH.\nInstall it from https://claude.com/claude-code, or set %s "+
 			"to its full path.", binEnv)

@@ -153,7 +153,7 @@ func TestSanitizeBlock(t *testing.T) {
 		{"osc 52 clipboard write replaced", "\x1b]52;c;aGk=\x07", "�]52;c;aGk=�"},
 		{"nul replaced", "a\x00b", "a�b"},
 		{"del replaced", "a\x7fb", "a�b"},
-		{"c1 replaced", "ab", "a�b"},
+		{"c1 replaced", "a\u009bb", "a�b"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
