@@ -13,6 +13,10 @@
   <img src="https://img.shields.io/github/go-mod/go-version/jonascript/ike" alt="Minimum Go version">
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" width="900" alt="Capturing a task from the shell with ike add, then the four-quadrant TUI: moving between tasks, opening an attached plan, adding a task, reclassifying it into another quadrant, and undoing that with an explanation of what was undone">
+</p>
+
 ---
 
 An Eisenhower matrix task manager, named for the president who popularized the
