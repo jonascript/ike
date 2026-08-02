@@ -31,6 +31,24 @@ IKE_DATA_FILE=$(mktemp -d)/t.json go run . list
 
 It must be an absolute path whose parent directory exists.
 
+To build a binary that reports a real version rather than `dev`, stamp it the
+way the release workflow does:
+
+```sh
+go build -ldflags "-X github.com/jonascript/ike/internal/cli.version=$(git describe --tags --always)" -o ike .
+```
+
+The demo GIF in the README is generated from a checked-in script, so it can be
+regenerated when the UI changes rather than re-recorded by hand:
+
+```sh
+brew install vhs        # https://github.com/charmbracelet/vhs
+vhs assets/demo.tape
+```
+
+It builds ike from the working tree and seeds a throwaway matrix in a fresh
+`mktemp -d`, so recording never touches your own data file.
+
 ## How the pieces fit together
 
 Dependency direction is `cli` → `tui`/`mcpserver` → `store` → `task`.
