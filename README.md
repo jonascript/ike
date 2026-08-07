@@ -185,11 +185,14 @@ ike space use work              # every later command follows
 ike add "Fix prod bug" -s work  # or act on one space just once
 ```
 
-Everything lives in `~/.local/share/ike/tasks.json` (mode `0600`, in a `0700`
-directory). Writes go through a lock file and an atomic rename with the previous
-contents kept as `.bak`, so three frontends can run at once and an interrupted
-write costs one change rather than the matrix. The file is self-contained and
-portable — copy it to another machine and every space comes with it.
+Everything lives under `~/.local/share/ike/` (mode `0600` files in `0700`
+directories): a small `tasks.json` manifest, and one file per space beside it
+in `tasks.json.spaces/`. Writes go through a lock file and atomic renames with
+each file's previous contents kept as its `.bak`, so three frontends can run at
+once and an interrupted write costs one change rather than the matrix. One
+damaged space file costs that one space, never the others. A space's file is
+self-contained and portable — it *is* the export format, so copying it to
+another machine is the whole move.
 
 → **[docs/data.md](docs/data.md)** covers spaces in full, exporting and
 importing a single matrix, the file's durability guarantees and their one

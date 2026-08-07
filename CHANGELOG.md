@@ -6,6 +6,40 @@ All notable changes to ike are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Each space is now its own file** (data format version 5). `tasks.json`
+  becomes a small manifest — which space is current, plus the two consent
+  settings — and the spaces live beside it in `tasks.json.spaces/`, one JSON
+  file each with its own rolling `.bak`. A mutation rewrites only the files it
+  touched, so corruption or a bad write in one space can never take the others
+  with it. One damaged space file no longer blocks the rest: the other spaces
+  keep working, the damaged one is listed as *unreadable* instead of silently
+  vanishing, nothing ever writes over its file, and
+  `ike space rm <name> --force` retires it to `.bak` once you give up on
+  repairing it.
+- **Migration is automatic and keeps a permanent escape hatch.** An existing
+  file (any version back to v1) is read as-is and split on the first change you
+  make; the pre-split file is kept as `tasks.json.pre-v5.bak` and never
+  overwritten. Older ike binaries refuse the new manifest outright rather than
+  misreading it as empty.
+- **`ike space export` now writes exactly the space's own file** — export and a
+  hand copy of `tasks.json.spaces/<name>.json` are byte-identical, and neither
+  can carry the consent flags because the format has no field for them. A
+  single exported space still opens with `--file` for reading *and* editing;
+  only operations that would need a second space refuse. `ike space import`
+  reads all three shapes: an old single-file export, a v5 space file, and a
+  whole v5 tree with `--all`.
+- Removing a space renames its file to `.bak` — removal and backup in one
+  atomic step — instead of relying on the document-wide backup.
+
+### Fixed
+
+- **Renaming a space now moves its plans too.** `ike space rename` used to
+  leave `tasks.json.plans/<old-name>/` behind, stranding every plan the space
+  had. `ike plan --prune` additionally sweeps plan directories whose space no
+  longer exists — while leaving an unreadable space's plans strictly alone.
+
 ## [0.2.0] - 2026-08-01
 
 ### Added
