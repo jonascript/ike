@@ -72,6 +72,91 @@ func TestExportProducesAnOpenableFile(t *testing.T) {
 	}
 }
 
+// An export is byte-identical to the space's own file in the spaces
+// directory: "a space is one file" made literal, so copying the file by hand
+// and exporting it are the same operation.
+func TestExportEqualsTheSpaceFile(t *testing.T) {
+	s := exportFixture(t)
+	out := filepath.Join(t.TempDir(), "work.json")
+	if _, err := s.ExportSpace("work", out, false); err != nil {
+		t.Fatal(err)
+	}
+	exported, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(spacesDir(s.Path()), encodeSpaceFilename("work")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(exported) != string(onDisk) {
+		t.Error("the export and the space's own file differ; they should be the same bytes")
+	}
+
+	// The converse holds too: a hand-copied space file imports like an export.
+	copied := filepath.Join(t.TempDir(), "copied.json")
+	if err := os.WriteFile(copied, onDisk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst := testStore(t)
+	imported, err := dst.ImportSpaces(copied, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imported) != 1 || imported[0].Name != "work" || imported[0].Active != 1 {
+		t.Errorf("imported = %+v, want the copied space", imported)
+	}
+}
+
+// A single exported space opens with --file for reading *and* editing — the
+// documented take-one-space-to-another-machine workflow — with edits going
+// back into the same file. What it cannot do is grow more spaces.
+func TestStandaloneSpaceFileEditsInPlace(t *testing.T) {
+	s := exportFixture(t)
+	out := filepath.Join(t.TempDir(), "work.json")
+	if _, err := s.ExportSpace("work", out, false); err != nil {
+		t.Fatal(err)
+	}
+
+	alone := OpenAt(out)
+	if _, _, err := alone.Add("added standalone", task.Do); err != nil {
+		t.Fatalf("editing a standalone space file: %v", err)
+	}
+	// The write landed in the same single file — no manifest, no sidecar
+	// spaces directory sprouted beside it.
+	if _, err := os.Stat(spacesDir(out)); !os.IsNotExist(err) {
+		t.Error("editing a standalone file created a spaces directory")
+	}
+	d, err := OpenAt(out).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Tasks) != 2 {
+		t.Errorf("tasks = %v, want the standalone edit persisted", titlesOf(d.Tasks))
+	}
+	if name, _ := rawFile(t, out)["name"].(string); name != "work" {
+		t.Errorf("the standalone file lost its space-file shape (name = %q)", name)
+	}
+	// Undo works too — the history stacks live in the space.
+	if _, _, err := alone.Undo(); err != nil {
+		t.Errorf("undo on a standalone file: %v", err)
+	}
+
+	// Space lifecycle operations have nowhere to put a second space.
+	if _, err := alone.NewSpace("other"); err == nil {
+		t.Error("NewSpace on a standalone file should refuse")
+	}
+	if err := alone.RenameSpace("work", "job"); err == nil {
+		t.Error("RenameSpace on a standalone file should refuse")
+	}
+	if _, err := alone.RemoveSpace("work", true); err == nil {
+		t.Error("RemoveSpace on a standalone file should refuse")
+	}
+	if _, err := alone.ImportSpaces(s.Path(), "", false); err == nil {
+		t.Error("ImportSpaces into a standalone file should refuse")
+	}
+}
+
 // Consent does not travel: an export exists to be copied to another machine,
 // whose owner has not agreed to anything.
 func TestExportNeverCarriesMCPAccess(t *testing.T) {
