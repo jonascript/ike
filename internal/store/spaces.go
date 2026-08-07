@@ -1,8 +1,10 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -233,6 +235,16 @@ func (s *Store) RenameSpace(from, to string) error {
 		f.Spaces[to] = d
 		if f.Current == canonical {
 			f.Current = to
+		}
+		// The plan sidecars are filed by space name, so they follow the
+		// rename — under the same lock, or a plan written in between would be
+		// filed under a name about to stop existing. Renaming used to leave
+		// them behind, which stranded every plan the space had. A space with
+		// no plans has no directory (ErrNotExist is the common case); any
+		// other failure aborts the rename before anything is written, which
+		// leaves both the space and its plans consistently under the old name.
+		if err := os.Rename(s.planDir(canonical), s.planDir(to)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("renaming the space's plans: %w", err)
 		}
 		return nil
 	})

@@ -301,6 +301,12 @@ func (s *Store) removePlan(space string, id int) error {
 // anyone who wants the space back.
 //
 // Archived tasks keep their plans, since Restore brings them back active.
+//
+// It also sweeps the plan directories of spaces that no longer exist —
+// removing or renaming a space historically left its plans behind with
+// nothing pointing at them. A directory belonging to an *unreadable* space is
+// left strictly alone: its space still exists, just in a file that needs
+// recovery, and the plans may be the only part of it still readable.
 func (s *Store) PrunePlans() (int, error) {
 	f, err := s.loadFile()
 	if err != nil {
@@ -308,6 +314,29 @@ func (s *Store) PrunePlans() (int, error) {
 	}
 
 	removed := 0
+	if entries, err := os.ReadDir(s.path + planDirSuffix); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if _, _, err := f.resolve(name); err == nil {
+				continue // a live space's plans
+			}
+			if _, _, ok := f.corruptNamed(name); ok {
+				continue // an unreadable space still owns its plans
+			}
+			dir := filepath.Join(s.path+planDirSuffix, name)
+			n, err := countPlanFiles(dir)
+			if err != nil {
+				return removed, s.redact(err)
+			}
+			if err := os.RemoveAll(dir); err != nil {
+				return removed, s.redact(err)
+			}
+			removed += n
+		}
+	}
 	for space, d := range f.Spaces {
 		live := make(map[int]bool, len(d.Tasks)+len(d.Archive))
 		for _, t := range d.Tasks {
@@ -336,6 +365,23 @@ func (s *Store) PrunePlans() (int, error) {
 		}
 	}
 	return removed, nil
+}
+
+// countPlanFiles counts the plan files in one space's plan directory, so a
+// sweep of the whole directory can report how many plans it removed rather
+// than how many directories.
+func countPlanFiles(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if _, ok := planFileID(e.Name()); ok {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // planFileID parses "<id>.md" or "<id>.draft.md" back into a task ID. Anything

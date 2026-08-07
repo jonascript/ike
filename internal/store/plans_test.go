@@ -368,6 +368,47 @@ func TestDeleteKeepsThePlanAndPruneRemovesIt(t *testing.T) {
 	}
 }
 
+// PrunePlans also sweeps the plan directories of spaces that no longer exist
+// — a removed space's plans had nothing pointing at them — but leaves an
+// unreadable space's directory strictly alone: that space still exists, and
+// its plans may be the only part of it still readable.
+func TestPruneSweepsRemovedSpacesButSparesUnreadableOnes(t *testing.T) {
+	s := testStore(t)
+	for _, name := range []string{"removed", "broken"} {
+		if _, err := s.NewSpace(name); err != nil {
+			t.Fatal(err)
+		}
+		a, _, err := s.InSpace(name).Add("planned", task.Do)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.InSpace(name).SetPlan(a.ID, samplePlan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.RemoveSpace("removed", true); err != nil {
+		t.Fatal(err)
+	}
+	brokenFile := filepath.Join(spacesDir(s.Path()), encodeSpaceFilename("broken"))
+	if err := os.WriteFile(brokenFile, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.PrunePlans()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("PrunePlans() removed %d, want the removed space's one plan", n)
+	}
+	if _, err := os.Stat(s.planDir("removed")); !os.IsNotExist(err) {
+		t.Error("the removed space's plan directory was left behind")
+	}
+	if _, err := os.Stat(filepath.Join(s.planDir("broken"), "1.md")); err != nil {
+		t.Errorf("the unreadable space's plans must be left alone: %v", err)
+	}
+}
+
 // An archived task still owns its plan: Restore brings it back active.
 func TestPruneKeepsArchivedTasksPlans(t *testing.T) {
 	s := testStore(t)
