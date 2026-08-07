@@ -54,17 +54,24 @@ func TestPlanBodyStaysOutOfTheDataFile(t *testing.T) {
 		s.Add("filler", task.Schedule)
 	}
 
-	b, err := os.ReadFile(p)
+	spacePath := filepath.Join(spacesDir(p), encodeSpaceFilename(defaultSpace))
+	for _, f := range []string{p, spacePath} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "Ship it.") {
+			t.Errorf("the plan body reached %s; it belongs in the sidecar, "+
+				"or every undo snapshot carries a copy of it", f)
+		}
+	}
+	// The stamp, by contrast, must be there — it is what marks the task planned.
+	b, err := os.ReadFile(spacePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), "Ship it.") {
-		t.Error("the plan body reached tasks.json; it belongs in the sidecar, " +
-			"or every undo snapshot carries a copy of it")
-	}
-	// The stamp, by contrast, must be there — it is what marks the task planned.
 	if !strings.Contains(string(b), "plan_at") {
-		t.Error("the PlanAt stamp should persist in the data file")
+		t.Error("the PlanAt stamp should persist in the space file")
 	}
 }
 
@@ -358,6 +365,47 @@ func TestDeleteKeepsThePlanAndPruneRemovesIt(t *testing.T) {
 	}
 	if _, err := os.Stat(planFile); !os.IsNotExist(err) {
 		t.Error("PrunePlans left the orphan behind")
+	}
+}
+
+// PrunePlans also sweeps the plan directories of spaces that no longer exist
+// — a removed space's plans had nothing pointing at them — but leaves an
+// unreadable space's directory strictly alone: that space still exists, and
+// its plans may be the only part of it still readable.
+func TestPruneSweepsRemovedSpacesButSparesUnreadableOnes(t *testing.T) {
+	s := testStore(t)
+	for _, name := range []string{"removed", "broken"} {
+		if _, err := s.NewSpace(name); err != nil {
+			t.Fatal(err)
+		}
+		a, _, err := s.InSpace(name).Add("planned", task.Do)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.InSpace(name).SetPlan(a.ID, samplePlan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.RemoveSpace("removed", true); err != nil {
+		t.Fatal(err)
+	}
+	brokenFile := filepath.Join(spacesDir(s.Path()), encodeSpaceFilename("broken"))
+	if err := os.WriteFile(brokenFile, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.PrunePlans()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("PrunePlans() removed %d, want the removed space's one plan", n)
+	}
+	if _, err := os.Stat(s.planDir("removed")); !os.IsNotExist(err) {
+		t.Error("the removed space's plan directory was left behind")
+	}
+	if _, err := os.Stat(filepath.Join(s.planDir("broken"), "1.md")); err != nil {
+		t.Errorf("the unreadable space's plans must be left alone: %v", err)
 	}
 }
 

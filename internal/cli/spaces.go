@@ -176,6 +176,11 @@ func spaceSummary(spaces []store.SpaceInfo) string {
 
 // spaceCounts describes what a space holds as a listing column.
 func spaceCounts(sp store.SpaceInfo) string {
+	if sp.Unreadable {
+		// Counts would be a lie — the file cannot be parsed, so nothing is
+		// known about what it holds.
+		return "unreadable — recover its file or `ike space rm` it with --force"
+	}
 	if sp.Archived == 0 {
 		return fmt.Sprintf("%d active", sp.Active)
 	}
@@ -269,8 +274,9 @@ func newSpaceRmCmd(open opener) *cobra.Command {
 		Long: "Delete a space, its tasks, its archive, and its history.\n\n" +
 			"Unlike deleting a task, this cannot be undone — the space has no\n" +
 			"history left to undo it from. A space holding anything needs --force,\n" +
-			"and the previous file contents remain in tasks.json.bak until the next\n" +
-			"change.",
+			"and the space's file is kept as a .bak beside the others until a new\n" +
+			"space claims the name. An unreadable space also needs --force, since\n" +
+			"its file may still hold everything the space ever had.",
 		Args: cobra.ExactArgs(1),
 		RunE: withStore(open, func(cmd *cobra.Command, args []string, s *store.Store) error {
 			if err := rejectSpaceFlag(cmd); err != nil {
@@ -288,7 +294,12 @@ func newSpaceRmCmd(open opener) *cobra.Command {
 			name := task.SanitizeDisplay(removed.Name)
 			// Say what was destroyed, not just that something was: the counts
 			// are the only record left once the space is gone.
-			fmt.Fprintf(cmd.OutOrStdout(), "deleted space %s (%s)\n", name, spaceCounts(removed))
+			if removed.Unreadable {
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"deleted unreadable space %s; its file is kept as a .bak in case it can be recovered\n", name)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "deleted space %s (%s)\n", name, spaceCounts(removed))
+			}
 			if removed.Current {
 				d, err := s.Load()
 				if err != nil {

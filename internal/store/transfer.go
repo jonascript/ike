@@ -14,17 +14,19 @@ import (
 // — export, copy the one file, import — which is why they live beside the space
 // operations rather than inside them.
 
-// ExportSpace writes one space to path as a standalone ike data file: a normal
-// document holding just that space, which opens with `ike --file` and imports
-// with `ike space import`.
+// ExportSpace writes one space to path as a standalone space file — the same
+// shape the space's own file in the .spaces directory holds, so an export is
+// the portability goal made literal: copying the file and exporting it produce
+// the same bytes. It opens with `ike --file` and imports with `ike space
+// import`.
 //
 // Both consent flags — MCP access and agent delegation — are deliberately left
 // off in the exported file, whatever they are here. Consent is a decision about
 // a file on a machine, and an export exists to be copied elsewhere: carrying
 // "agents may read this", still less "ike may start an agent", along to a
 // machine whose owner never said so would be the wrong default in the one
-// direction that matters. The out literal below gets this by construction, by
-// naming only the three fields an export carries.
+// direction that matters. Since version 5 the space-file shape has no field for
+// either flag, so this holds by construction rather than by decision.
 //
 // Plan bodies are *not* exported. They live beside the data file rather than in
 // it (see plans.go), so an export carries the tasks and their PlanAt stamps but
@@ -50,12 +52,14 @@ func (s *Store) ExportSpace(name, path string, force bool) (SpaceInfo, error) {
 			return SpaceInfo{}, err
 		}
 	}
-	out := File{
-		Version: currentVersion,
-		Current: canonical,
-		Spaces:  map[string]*Data{canonical: d},
+	b, err := marshalJSONFile(spaceFile{Version: currentVersion, Name: canonical, Data: *d})
+	if err != nil {
+		return SpaceInfo{}, err
 	}
-	if err := writeFileAtomic(p, out); err != nil {
+	if err := writeBackup(p); err != nil {
+		return SpaceInfo{}, err
+	}
+	if err := writeBytesAtomic(p, ".space-*.json", b); err != nil {
 		return SpaceInfo{}, err
 	}
 	return SpaceInfo{
@@ -84,7 +88,7 @@ func (s *Store) ImportSpaces(path, as string, all bool) ([]SpaceInfo, error) {
 	if _, err := os.Stat(p); err != nil {
 		return nil, err
 	}
-	src, err := readFile(p)
+	src, err := readTree(p)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +106,9 @@ func (s *Store) ImportSpaces(path, as string, all bool) ([]SpaceInfo, error) {
 
 	var imported []SpaceInfo
 	_, err = s.mutateFile(func(f *File) error {
+		if err := f.checkLifecycle("import into this file"); err != nil {
+			return err
+		}
 		imported = nil
 		for _, from := range take {
 			d, ok := src.Spaces[from]

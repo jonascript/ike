@@ -220,7 +220,11 @@ func (m *Model) deleteSpace(sp store.SpaceInfo, pending string) {
 	if pending != sp.Name {
 		m.pendingSpace = sp.Name
 		held := ""
-		if sp.Active > 0 || sp.Archived > 0 {
+		if sp.Unreadable {
+			// The file cannot be parsed, so no counts exist to warn with; what
+			// the prompt can say is that whatever it held goes too.
+			held = " (unreadable; discards whatever its file still holds)"
+		} else if sp.Active > 0 || sp.Archived > 0 {
 			held = fmt.Sprintf(" (%d active, %d archived)", sp.Active, sp.Archived)
 		}
 		// Kept short enough to survive truncation at 80 columns: the counts and

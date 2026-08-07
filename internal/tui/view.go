@@ -159,8 +159,14 @@ func (m Model) renderSpaces() string {
 		if sp.Current {
 			current = "•"
 		}
-		rows[i] = fmt.Sprintf("  %s %-*s  %d active, %d archived",
-			current, width, task.SanitizeDisplay(sp.Name), sp.Active, sp.Archived)
+		counts := fmt.Sprintf("%d active, %d archived", sp.Active, sp.Archived)
+		if sp.Unreadable {
+			// Counts would be a lie: the space's file cannot be parsed, so
+			// nothing is known about what it holds.
+			counts = "unreadable"
+		}
+		rows[i] = fmt.Sprintf("  %s %-*s  %s",
+			current, width, task.SanitizeDisplay(sp.Name), counts)
 	}
 	return m.renderList(listView{
 		title:  fmt.Sprintf("Spaces — %d", len(spaces)),

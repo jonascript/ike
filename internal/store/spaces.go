@@ -1,8 +1,10 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -33,6 +35,11 @@ type SpaceInfo struct {
 	Active   int    `json:"active"`
 	Archived int    `json:"archived"`
 	Current  bool   `json:"current"`
+	// Unreadable marks a space whose file exists but cannot be parsed. It is
+	// listed rather than hidden — a space silently missing from every picker
+	// is how data loss goes unnoticed — but its counts are necessarily zero
+	// and resolving it fails.
+	Unreadable bool `json:"unreadable,omitempty"`
 }
 
 // resolve returns the space an operation should act on, and its canonical name:
@@ -57,6 +64,15 @@ func (f *File) resolve(name string) (string, *Data, error) {
 			return have, d, nil
 		}
 	}
+	// A space whose file exists but cannot be parsed gets its own answer:
+	// "no space named X" would send someone hunting for a typo when the real
+	// problem is a file needing recovery — and the difference matters, because
+	// every *other* space still works.
+	if have, cs, ok := f.corruptNamed(name); ok {
+		return "", nil, fmt.Errorf(
+			"space %q is unreadable (%v); other spaces are unaffected — recover %s or remove the space with `ike space rm %q --force`",
+			have, cs.err, cs.file, have)
+	}
 	return "", nil, fmt.Errorf("no space named %q", name)
 }
 
@@ -78,7 +94,7 @@ func (f *File) dataFor(name string, d *Data) Data {
 // than in map order so a picker, `ike space list`, and the TUI's next/previous
 // keys all agree on what "the space after this one" means.
 func (f *File) spaceInfos() []SpaceInfo {
-	out := make([]SpaceInfo, 0, len(f.Spaces))
+	out := make([]SpaceInfo, 0, len(f.Spaces)+len(f.corrupt))
 	for _, name := range slices.Sorted(maps.Keys(f.Spaces)) {
 		d := f.Spaces[name]
 		out = append(out, SpaceInfo{
@@ -88,6 +104,16 @@ func (f *File) spaceInfos() []SpaceInfo {
 			Current:  name == f.Current,
 		})
 	}
+	// Unreadable spaces are listed too: a space quietly missing from every
+	// picker is how data loss goes unnoticed until far too late.
+	for _, name := range slices.Sorted(maps.Keys(f.corrupt)) {
+		out = append(out, SpaceInfo{
+			Name:       name,
+			Current:    name == f.Current,
+			Unreadable: true,
+		})
+	}
+	slices.SortFunc(out, func(a, b SpaceInfo) int { return strings.Compare(a.Name, b.Name) })
 	return out
 }
 
@@ -113,8 +139,20 @@ func (f *File) checkNewName(name string) error {
 // The space operations below are deliberately **not undoable**. History is
 // per-space, so a document-level change has no stack to record onto, and a
 // stack that could resurrect a removed space would have to hold the whole
-// matrix. `tasks.json.bak` remains the recovery path for a removal, which is
-// why RemoveSpace makes the caller say the name and confirm the loss.
+// matrix. The space file renamed to `.bak` remains the recovery path for a
+// removal, which is why RemoveSpace makes the caller say the name and confirm
+// the loss.
+
+// checkLifecycle refuses a space lifecycle change on a standalone document —
+// a single exported space file opened with --file. Such a file can hold
+// exactly one space, so every operation that would change the set of spaces
+// has no way to persist its result.
+func (f *File) checkLifecycle(op string) error {
+	if f.standalone {
+		return fmt.Errorf("cannot %s: this is a single exported space, not a full data file; import it first with `ike space import`", op)
+	}
+	return nil
+}
 
 // ListSpaces describes every space in the file, sorted by name.
 func (s *Store) ListSpaces() ([]SpaceInfo, error) {
@@ -138,6 +176,9 @@ func (s *Store) NewSpace(name string) (Data, error) {
 	name = strings.TrimSpace(name)
 	var out Data
 	_, err := s.mutateFile(func(f *File) error {
+		if err := f.checkLifecycle("create a space"); err != nil {
+			return err
+		}
 		if err := f.checkNewName(name); err != nil {
 			return err
 		}
@@ -174,6 +215,9 @@ func (s *Store) UseSpace(name string) (Data, error) {
 func (s *Store) RenameSpace(from, to string) error {
 	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
 	_, err := s.mutateFile(func(f *File) error {
+		if err := f.checkLifecycle("rename a space"); err != nil {
+			return err
+		}
 		canonical, d, err := f.resolve(from)
 		if err != nil {
 			return err
@@ -192,6 +236,16 @@ func (s *Store) RenameSpace(from, to string) error {
 		if f.Current == canonical {
 			f.Current = to
 		}
+		// The plan sidecars are filed by space name, so they follow the
+		// rename — under the same lock, or a plan written in between would be
+		// filed under a name about to stop existing. Renaming used to leave
+		// them behind, which stranded every plan the space had. A space with
+		// no plans has no directory (ErrNotExist is the common case); any
+		// other failure aborts the rename before anything is written, which
+		// leaves both the space and its plans consistently under the old name.
+		if err := os.Rename(s.planDir(canonical), s.planDir(to)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("renaming the space's plans: %w", err)
+		}
 		return nil
 	})
 	return err
@@ -209,6 +263,26 @@ func (s *Store) RemoveSpace(name string, force bool) (SpaceInfo, error) {
 	name = strings.TrimSpace(name)
 	var removed SpaceInfo
 	_, err := s.mutateFile(func(f *File) error {
+		if err := f.checkLifecycle("remove a space"); err != nil {
+			return err
+		}
+		// Removing an unreadable space is the recovery affordance: nothing
+		// else may touch its file, so without this the only cleanup would be
+		// deleting the file by hand. It requires force the way a non-empty
+		// space does — the file may hold every task the space ever had — and
+		// like every removal it renames to .bak rather than deleting.
+		if have, cs, ok := f.corruptNamed(name); ok && name != "" {
+			if !force {
+				return fmt.Errorf("%q is unreadable (%v); removing it discards whatever its file still holds — pass force to confirm", have, cs.err)
+			}
+			removed = SpaceInfo{Name: have, Current: have == f.Current, Unreadable: true}
+			f.removeCorrupt = append(f.removeCorrupt, cs.file)
+			delete(f.corrupt, have)
+			if f.Current == have && len(f.Spaces) > 0 {
+				f.Current = slices.Min(slices.Collect(maps.Keys(f.Spaces)))
+			}
+			return nil
+		}
 		canonical, d, err := f.resolve(name)
 		if err != nil {
 			return err

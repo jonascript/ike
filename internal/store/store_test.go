@@ -2,10 +2,9 @@ package store
 
 import (
 	"encoding/json"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -216,6 +215,42 @@ func TestConcurrentWriters(t *testing.T) {
 	}
 }
 
+// ModTime is the TUI's only change signal, so every kind of write must move
+// it: a task mutation now lands in a space file, not the polled tasks.json,
+// and a signal that missed those would leave an open TUI stale forever.
+func TestModTimeMovesOnEveryKindOfWrite(t *testing.T) {
+	s := testStore(t)
+
+	if m, err := s.ModTime(); err != nil || m != 0 {
+		t.Fatalf("ModTime before any write = %d, %v; want 0", m, err)
+	}
+
+	last := int64(0)
+	bump := func(step string, op func() error) {
+		t.Helper()
+		// Coarse-mtime filesystems need real time between writes for the
+		// signal to be observable at all.
+		time.Sleep(10 * time.Millisecond)
+		if err := op(); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		m, err := s.ModTime()
+		if err != nil {
+			t.Fatalf("%s: ModTime: %v", step, err)
+		}
+		if m <= last {
+			t.Errorf("%s did not move ModTime (%d -> %d)", step, last, m)
+		}
+		last = m
+	}
+
+	bump("add", func() error { _, _, err := s.Add("x", task.Do); return err })
+	bump("second add", func() error { _, _, err := s.Add("y", task.Do); return err })
+	bump("space new", func() error { _, err := s.NewSpace("other"); return err })
+	bump("space use", func() error { _, err := s.UseSpace("other"); return err })
+	bump("space rm", func() error { _, err := s.RemoveSpace("other", false); return err })
+}
+
 // rawFile decodes the data file as plain JSON, for assertions about the shape
 // on disk rather than the shape in memory.
 func rawFile(t *testing.T, path string) map[string]any {
@@ -241,42 +276,43 @@ func onDiskVersion(t *testing.T, path string) int {
 	return int(v)
 }
 
-// rawSpace returns one space's body from the file on disk.
+// rawSpace returns one space's body from its file on disk.
 func rawSpace(t *testing.T, path, name string) map[string]any {
 	t.Helper()
-	spaces, ok := rawFile(t, path)["spaces"].(map[string]any)
-	if !ok {
-		t.Fatalf("%s has no spaces object", path)
-	}
-	body, ok := spaces[name].(map[string]any)
-	if !ok {
-		t.Fatalf("%s has no space %q (spaces: %v)", path, name, slices.Sorted(maps.Keys(spaces)))
-	}
-	return body
+	return rawFile(t, filepath.Join(spacesDir(path), encodeSpaceFilename(name)))
 }
 
 func TestFileFormat(t *testing.T) {
 	s := testStore(t)
 	s.Add("x", task.Do)
 
+	// The manifest holds the document-level fields, and deliberately no
+	// "spaces" key: a version-4 binary must refuse it on the version check,
+	// not decode an empty matrix it was about to overwrite.
 	m := rawFile(t, s.Path())
-	for _, k := range []string{"version", "current", "spaces"} {
+	for _, k := range []string{"version", "current"} {
 		if _, ok := m[k]; !ok {
-			t.Errorf("file missing top-level key %q", k)
+			t.Errorf("manifest missing top-level key %q", k)
 		}
 	}
-	// The matrix itself sits one level down, under its space.
+	for _, k := range []string{"spaces", "tasks", "next_id"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("manifest should not hold key %q", k)
+		}
+	}
+	// The matrix lives in the space's own file, which is self-describing —
+	// the same shape `ike space export` writes.
 	body := rawSpace(t, s.Path(), defaultSpace)
-	for _, k := range []string{"next_id", "tasks"} {
+	for _, k := range []string{"version", "name", "next_id", "tasks"} {
 		if _, ok := body[k]; !ok {
-			t.Errorf("space missing key %q", k)
+			t.Errorf("space file missing key %q", k)
 		}
 	}
-	// The fields derived from the document on every read describe the file, not
-	// the matrix, and must never be written into a space.
-	for _, k := range []string{"space", "spaces", "mcp_enabled", "version"} {
+	// The derived fields describe the document, not the matrix, and the
+	// consent flags must have no way into a file that export can copy.
+	for _, k := range []string{"space", "spaces", "all_spaces", "current", "mcp_enabled", "agent_enabled"} {
 		if _, ok := body[k]; ok {
-			t.Errorf("space should not persist key %q", k)
+			t.Errorf("space file should not persist key %q", k)
 		}
 	}
 }
@@ -333,6 +369,250 @@ func TestUpgradesSingleMatrixFile(t *testing.T) {
 	}
 	if enabled, _ := rawFile(t, path)["mcp_enabled"].(bool); !enabled {
 		t.Error("mcp_enabled should be a document-level key after the upgrade")
+	}
+}
+
+// The v4→v5 migration happens on the first write, never on read, and the
+// monolith survives it twice over: as the rolling .bak of the manifest that
+// replaced it, and as a one-time .pre-v5.bak that nothing ever overwrites.
+func TestMigrationSplitsMonolithOnFirstWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	v4 := `{
+	  "version": 4,
+	  "current": "work",
+	  "mcp_enabled": true,
+	  "spaces": {
+	    "work": {"next_id": 2, "tasks": [{"id": 1, "title": "a", "quadrant": 1, "rank": 1024}]},
+	    "personal": {"next_id": 1, "tasks": []}
+	  }
+	}`
+	if err := os.WriteFile(path, []byte(v4), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := OpenAt(path)
+
+	// Reads serve the old layout indefinitely and write nothing.
+	if _, err := s.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if v := onDiskVersion(t, path); v != 4 {
+		t.Errorf("a read migrated the file to version %d", v)
+	}
+	if _, err := os.Stat(spacesDir(path)); !os.IsNotExist(err) {
+		t.Error("a read created the spaces directory")
+	}
+
+	// The first mutation migrates the whole document.
+	if _, _, err := s.InSpace("personal").Add("x", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if v := onDiskVersion(t, path); v != currentVersion {
+		t.Errorf("on-disk version = %d, want %d", v, currentVersion)
+	}
+	m := rawFile(t, path)
+	if _, ok := m["spaces"]; ok {
+		t.Error("the manifest still holds a spaces key")
+	}
+	if cur, _ := m["current"].(string); cur != "work" {
+		t.Errorf("current = %q, want %q preserved", cur, "work")
+	}
+	if on, _ := m["mcp_enabled"].(bool); !on {
+		t.Error("mcp_enabled should survive the migration")
+	}
+	work := rawSpace(t, path, "work")
+	if tasks, _ := work["tasks"].([]any); len(tasks) != 1 {
+		t.Errorf("work tasks = %v, want the monolith's task", work["tasks"])
+	}
+	personal := rawSpace(t, path, "personal")
+	if tasks, _ := personal["tasks"].([]any); len(tasks) != 1 {
+		t.Errorf("personal tasks = %v, want the added task", personal["tasks"])
+	}
+
+	// The pre-migration monolith is kept, byte for byte, and a later write
+	// does not touch it — the rolling .bak is clobbered by the very next
+	// document-level change, so this copy is the durable escape hatch.
+	bak, err := os.ReadFile(path + preV5BackupSuffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(bak) != v4 {
+		t.Errorf("pre-v5 backup = %s, want the original monolith", bak)
+	}
+	if _, _, err := s.Add("later", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	bak2, _ := os.ReadFile(path + preV5BackupSuffix)
+	if string(bak2) != v4 {
+		t.Error("a later write rewrote the pre-v5 backup")
+	}
+}
+
+// A migration that crashed before its commit point — the manifest write —
+// leaves space files beside a still-authoritative monolith. The next
+// migration must clear them, or a space deleted since the crash would
+// resurrect beside the real ones.
+func TestMigrationClearsDebrisOfACrashedMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	v4 := `{"version": 4, "current": "work",
+	  "spaces": {"work": {"next_id": 2, "tasks": [{"id": 1, "title": "real", "quadrant": 1, "rank": 1024}]}}}`
+	if err := os.WriteFile(path, []byte(v4), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(spacesDir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := `{"version": 5, "name": "deleted-since", "next_id": 9, "tasks": []}`
+	staleWork := `{"version": 5, "name": "work", "next_id": 9, "tasks": []}`
+	os.WriteFile(filepath.Join(spacesDir(path), "deleted-since.json"), []byte(stale), 0o600)
+	os.WriteFile(filepath.Join(spacesDir(path), "work.json"), []byte(staleWork), 0o600)
+
+	s := OpenAt(path)
+	if _, _, err := s.Add("x", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(spacesDir(path), "deleted-since.json")); !os.IsNotExist(err) {
+		t.Error("crash debris survived the migration and resurrected a space")
+	}
+	work := rawSpace(t, path, "work")
+	if id, _ := work["next_id"].(float64); int(id) != 3 {
+		t.Errorf("work next_id = %v, want the monolith's state (3), not the debris", work["next_id"])
+	}
+}
+
+// One corrupt space file must cost that one space, not the document — that is
+// the point of the split. The others keep working, the broken one is listed
+// rather than hidden, no write touches its file, and removing it with force
+// is the recovery affordance.
+func TestCorruptSpaceFileDegradesGracefully(t *testing.T) {
+	s := testStore(t)
+	if _, _, err := s.Add("keep", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.NewSpace("broken"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.InSpace("broken").Add("doomed", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	brokenPath := filepath.Join(spacesDir(s.Path()), encodeSpaceFilename("broken"))
+	if err := os.WriteFile(brokenPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The healthy space still loads, and the listing shows both — a space
+	// silently missing from the picker is how loss goes unnoticed.
+	d, err := s.Load()
+	if err != nil {
+		t.Fatalf("the healthy space should load: %v", err)
+	}
+	if len(d.AllSpaces) != 2 {
+		t.Fatalf("AllSpaces = %+v, want both spaces listed", d.AllSpaces)
+	}
+	if !d.AllSpaces[0].Unreadable || d.AllSpaces[0].Name != "broken" {
+		t.Errorf("AllSpaces[0] = %+v, want broken marked unreadable", d.AllSpaces[0])
+	}
+
+	// Resolving the broken space names the real problem, not a typo hunt.
+	if _, err := s.InSpace("broken").Load(); err == nil || !strings.Contains(err.Error(), "unreadable") {
+		t.Errorf("loading the broken space = %v, want an unreadable error", err)
+	}
+	if _, _, err := s.InSpace("broken").Add("x", task.Do); err == nil {
+		t.Error("mutating an unreadable space should fail")
+	}
+
+	// A write to the healthy space leaves the corrupt bytes exactly as they
+	// are: they may be recoverable by hand, and nothing may foreclose that.
+	if _, _, err := s.Add("more", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(brokenPath)
+	if err != nil {
+		t.Fatalf("a write removed the unreadable file: %v", err)
+	}
+	if string(after) != "{not json" {
+		t.Errorf("a write altered the unreadable file: %q", after)
+	}
+
+	// Removal needs force, and even then the file is renamed, not deleted.
+	if _, err := s.RemoveSpace("broken", false); err == nil {
+		t.Error("removing an unreadable space without force should fail")
+	}
+	removed, err := s.RemoveSpace("broken", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed.Unreadable || removed.Name != "broken" {
+		t.Errorf("removed = %+v, want the unreadable space", removed)
+	}
+	if _, err := os.Stat(brokenPath); !os.IsNotExist(err) {
+		t.Error("the unreadable file is still in the spaces directory")
+	}
+	if bak, err := os.ReadFile(brokenPath + ".bak"); err != nil || string(bak) != "{not json" {
+		t.Errorf("the unreadable file should survive as .bak: %q, %v", bak, err)
+	}
+	if d, err := s.Load(); err != nil || len(d.AllSpaces) != 1 {
+		t.Errorf("after removal: %+v, %v; want one healthy space", d.AllSpaces, err)
+	}
+}
+
+// A corrupt file behind the *current* space must fail loudly, not quietly
+// repair Current toward some other space — the user has to be told the space
+// they work in needs attention.
+func TestCorruptCurrentSpaceStaysCurrent(t *testing.T) {
+	s := testStore(t)
+	if _, _, err := s.Add("x", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.NewSpace("other"); err != nil {
+		t.Fatal(err)
+	}
+	defaultPath := filepath.Join(spacesDir(s.Path()), encodeSpaceFilename(defaultSpace))
+	if err := os.WriteFile(defaultPath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Load(); err == nil || !strings.Contains(err.Error(), "unreadable") {
+		t.Errorf("bare Load = %v, want the unreadable error for the current space", err)
+	}
+	if _, err := s.InSpace("other").Load(); err != nil {
+		t.Errorf("the other space should still load: %v", err)
+	}
+	// A write elsewhere must not move Current off the broken space.
+	if _, _, err := s.InSpace("other").Add("y", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if cur, _ := rawFile(t, s.Path())["current"].(string); cur != defaultSpace {
+		t.Errorf("current = %q; a write repaired it away from the unreadable space", cur)
+	}
+}
+
+// Even with every space unreadable the document still answers what it can:
+// the listing, and both consent readers.
+func TestAllSpacesCorruptStillListsAndAnswersConsent(t *testing.T) {
+	s := testStore(t)
+	if _, _, err := s.Add("x", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetMCPEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	defaultPath := filepath.Join(spacesDir(s.Path()), encodeSpaceFilename(defaultSpace))
+	if err := os.WriteFile(defaultPath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	infos, err := s.ListSpaces()
+	if err != nil {
+		t.Fatalf("ListSpaces with every space corrupt: %v", err)
+	}
+	if len(infos) != 1 || !infos[0].Unreadable {
+		t.Errorf("infos = %+v, want the one unreadable space", infos)
+	}
+	if on, err := s.MCPEnabled(); err != nil || !on {
+		t.Errorf("MCPEnabled = %v, %v; consent must stay readable", on, err)
+	}
+	if _, err := s.Load(); err == nil {
+		t.Error("loading an unreadable space should still fail")
 	}
 }
 

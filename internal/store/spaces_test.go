@@ -288,14 +288,91 @@ func TestRenameSpaceRejectsCollisionAndKeepsTheOriginal(t *testing.T) {
 }
 
 // Renaming a space to a different casing of its own name is a legitimate
-// rename, not a collision with itself.
+// rename, not a collision with itself. On a case-insensitive filesystem the
+// old and new filenames are one file, so this is also the test that the write
+// side's delete-the-old-name step does not delete the file it just wrote.
 func TestRenameSpaceCanChangeOnlyCasing(t *testing.T) {
 	s := spacesStore(t, "work")
+	if _, _, err := s.InSpace("work").Add("survives", task.Do); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.RenameSpace("work", "Work"); err != nil {
 		t.Fatalf("recasing a space name: %v", err)
 	}
 	if got := spaceNames(t, s); !slicesEqual(got, []string{"Work", "default"}) {
 		t.Errorf("spaces = %v, want the recased name", got)
+	}
+	d, err := s.InSpace("Work").Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Tasks) != 1 {
+		t.Errorf("tasks = %v, want the task to survive the recasing", titlesOf(d.Tasks))
+	}
+	// The file on disk carries the new name inside and out.
+	body := rawSpace(t, s.Path(), "Work")
+	if name, _ := body["name"].(string); name != "Work" {
+		t.Errorf("embedded name = %q, want the recased name", name)
+	}
+}
+
+// A rename moves the space's file — the old name's file becomes a .bak, the
+// new name's file exists — and carries the plan sidecar directory along,
+// which renaming historically failed to do, stranding every plan the space
+// had.
+func TestRenameSpaceMovesTheFileAndThePlans(t *testing.T) {
+	s := spacesStore(t, "work")
+	a, _, err := s.InSpace("work").Add("planned", task.Do)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.InSpace("work").SetPlan(a.ID, "# The plan\n\nDo it."); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameSpace("work", "job"); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := spacesDir(s.Path())
+	if _, err := os.Stat(filepath.Join(dir, encodeSpaceFilename("job"))); err != nil {
+		t.Errorf("the renamed space has no file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, encodeSpaceFilename("work"))); !os.IsNotExist(err) {
+		t.Error("the old name's file is still in the spaces directory")
+	}
+	if _, err := os.Stat(filepath.Join(dir, encodeSpaceFilename("work")+".bak")); err != nil {
+		t.Errorf("the old name's file should survive as .bak: %v", err)
+	}
+	// The plan is reachable under the new name and gone from the old.
+	body, err := s.InSpace("job").Plan(a.ID)
+	if err != nil || !strings.Contains(body, "Do it.") {
+		t.Errorf("plan after rename = %q, %v; want it to follow the space", body, err)
+	}
+	if _, err := os.Stat(s.planDir("work")); !os.IsNotExist(err) {
+		t.Error("the old name's plan directory was left behind")
+	}
+}
+
+// Removing a space renames its file to .bak — removal and backup in one
+// atomic step, so the .bak really is the recovery path the docs promise.
+func TestRemoveSpaceKeepsTheFileAsBak(t *testing.T) {
+	s := spacesStore(t, "doomed")
+	if _, _, err := s.InSpace("doomed").Add("gone", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RemoveSpace("doomed", true); err != nil {
+		t.Fatal(err)
+	}
+	dir := spacesDir(s.Path())
+	if _, err := os.Stat(filepath.Join(dir, encodeSpaceFilename("doomed"))); !os.IsNotExist(err) {
+		t.Error("the removed space's file is still in the spaces directory")
+	}
+	bak, err := os.ReadFile(filepath.Join(dir, encodeSpaceFilename("doomed")+".bak"))
+	if err != nil {
+		t.Fatalf("no .bak after removal: %v", err)
+	}
+	if !strings.Contains(string(bak), "gone") {
+		t.Errorf(".bak does not hold the removed space's tasks: %s", bak)
 	}
 }
 
