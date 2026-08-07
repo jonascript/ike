@@ -240,7 +240,7 @@ func (s *Store) SetMCPEnabled(on bool) (changed bool, err error) {
 
 // MCPEnabled reports whether the MCP server may serve this file.
 func (s *Store) MCPEnabled() (bool, error) {
-	f, err := readFile(s.path)
+	f, err := readTree(s.path)
 	if err != nil {
 		return false, s.redact(err)
 	}
@@ -274,7 +274,7 @@ func (s *Store) SetAgentEnabled(on bool) (changed bool, err error) {
 
 // AgentEnabled reports whether ike may run an agent against this file.
 func (s *Store) AgentEnabled() (bool, error) {
-	f, err := readFile(s.path)
+	f, err := readTree(s.path)
 	if err != nil {
 		return false, s.redact(err)
 	}

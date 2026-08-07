@@ -84,7 +84,7 @@ func (s *Store) ImportSpaces(path, as string, all bool) ([]SpaceInfo, error) {
 	if _, err := os.Stat(p); err != nil {
 		return nil, err
 	}
-	src, err := readFile(p)
+	src, err := readTree(p)
 	if err != nil {
 		return nil, err
 	}

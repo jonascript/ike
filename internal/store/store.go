@@ -14,10 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -88,6 +86,36 @@ type File struct {
 	Spaces       map[string]*Data `json:"spaces"`
 	MCPEnabled   bool             `json:"mcp_enabled,omitempty"`
 	AgentEnabled bool             `json:"agent_enabled,omitempty"`
+
+	// The fields below are read-state: what readTree saw on disk, carried so
+	// the write side can tell what actually changed. None of them are part of
+	// the document, and File itself is never marshaled wholesale at version 5
+	// — the json tags above remain for reading version-4 envelopes.
+
+	// onDiskVersion is the version the document file held when read, or 0 if
+	// there was none. The write side migrates when it is 1 through 4.
+	onDiskVersion int
+	// rawDoc holds the document file's bytes as read — the monolith to back
+	// up before a migration, or the manifest to compare against for a
+	// dirty check.
+	rawDoc []byte
+	// rawSpace holds each space file's bytes as read, keyed by space name.
+	// A space whose current marshaling matches is not rewritten, which is
+	// what confines a write to the spaces it touched.
+	rawSpace map[string][]byte
+	// fileFor records which filename each space was actually read from,
+	// which is not always the encoding of its name: the embedded name is
+	// canonical, and a hand-copied or normalization-mangled filename is
+	// repaired on the next write rather than trusted.
+	fileFor map[string]string
+	// corrupt lists spaces whose files could not be parsed, by display name.
+	// They are absent from Spaces and from rawSpace, so no write can touch
+	// their files; reads surface them instead of failing the whole document.
+	corrupt map[string]error
+	// standalone marks a Store opened directly on a single space file — an
+	// export handed to --file. The document then has exactly that space,
+	// writes go back to the same file, and space lifecycle operations refuse.
+	standalone bool
 }
 
 // Data is one space: a complete matrix, and the unit every operation acts on.
@@ -336,7 +364,7 @@ func (s *Store) Load() (Data, error) {
 // spaces must keep working when the pinned one does not exist, since a listing
 // is how you find that out.
 func (s *Store) loadFile() (File, error) {
-	f, err := readFile(s.path)
+	f, err := readTree(s.path)
 	if err != nil {
 		return File{}, s.redact(err)
 	}
@@ -437,7 +465,7 @@ func (s *Store) mutateFile(fn func(*File) error) (file File, err error) {
 		}
 	}()
 
-	file, err = readFile(s.path)
+	file, err = readTree(s.path)
 	if err != nil {
 		return File{}, s.redact(err)
 	}
@@ -453,79 +481,6 @@ func (s *Store) mutateFile(fn func(*File) error) (file File, err error) {
 		return File{}, s.redact(err)
 	}
 	return file, nil
-}
-
-func readFile(path string) (File, error) {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return emptyFile(), nil
-	}
-	if err != nil {
-		return File{}, err
-	}
-	var f File
-	if err := json.Unmarshal(b, &f); err != nil {
-		return File{}, fmt.Errorf("parsing %s: %w", path, err)
-	}
-	if f.Version < 1 || f.Version > currentVersion {
-		return File{}, fmt.Errorf("%s has unsupported version %d (expected %d)", path, f.Version, currentVersion)
-	}
-
-	// Older files are upgraded in memory; the next write persists the upgrade.
-	//
-	// The discriminator is the version, never `spaces == nil`. A single-matrix
-	// file carries `version` and `mcp_enabled` at the same top level the
-	// envelope does, so it has already decoded into the right two fields and
-	// the body only needs re-reading as one space. Going by the missing key
-	// instead would quietly accept a truncated or hand-edited v4 file as an
-	// empty matrix, and the next write would erase the lot.
-	if f.Version < currentVersion {
-		var d Data
-		if err := json.Unmarshal(b, &d); err != nil {
-			return File{}, fmt.Errorf("parsing %s: %w", path, err)
-		}
-		// History from before version 3 is dropped rather than reinterpreted.
-		// Those snapshots stored a whole archive and no ArchiveEntry, so undoing
-		// a restore recorded by an older build would silently lose that entry's
-		// completion stamp. Losing undo history on a one-time upgrade is a far
-		// better outcome than quietly losing an archived task, and the tasks
-		// themselves are untouched either way.
-		if f.Version < 3 {
-			d.Undo, d.Redo = nil, nil
-		}
-		f.Spaces = map[string]*Data{defaultSpace: &d}
-		f.Current = defaultSpace
-	}
-	if len(f.Spaces) == 0 {
-		return File{}, fmt.Errorf("%s has no spaces", path)
-	}
-	f.Version = currentVersion
-
-	for name, d := range f.Spaces {
-		if d == nil {
-			return File{}, fmt.Errorf("%s has an empty space %q", path, name)
-		}
-		if d.NextID < 1 {
-			d.NextID = 1
-		}
-		// Before normalizeRanks, so a task rescued from an invalid quadrant gets
-		// a rank in the quadrant it lands in.
-		clampQuadrants(d)
-		// Every space, not just the one about to be read. A write persists them
-		// all, so a space left un-normalized would have its pre-rank ordering
-		// rewritten by whichever mutation happened to touch a different space.
-		normalizeRanks(d)
-	}
-	// A current that names nothing — a hand edit, or a space removed by a build
-	// that did not follow it — would otherwise break every command until it was
-	// fixed by hand. Repair it the way an out-of-range NextID is repaired. An
-	// explicitly requested space that is missing still fails: "the file is
-	// inconsistent" and "you asked for something that is not there" are
-	// different situations and deserve different answers.
-	if _, ok := f.Spaces[f.Current]; !ok {
-		f.Current = slices.Min(slices.Collect(maps.Keys(f.Spaces)))
-	}
-	return f, nil
 }
 
 func writeFileAtomic(path string, doc File) error {
