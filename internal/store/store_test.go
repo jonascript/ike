@@ -214,6 +214,42 @@ func TestConcurrentWriters(t *testing.T) {
 	}
 }
 
+// ModTime is the TUI's only change signal, so every kind of write must move
+// it: a task mutation now lands in a space file, not the polled tasks.json,
+// and a signal that missed those would leave an open TUI stale forever.
+func TestModTimeMovesOnEveryKindOfWrite(t *testing.T) {
+	s := testStore(t)
+
+	if m, err := s.ModTime(); err != nil || m != 0 {
+		t.Fatalf("ModTime before any write = %d, %v; want 0", m, err)
+	}
+
+	last := int64(0)
+	bump := func(step string, op func() error) {
+		t.Helper()
+		// Coarse-mtime filesystems need real time between writes for the
+		// signal to be observable at all.
+		time.Sleep(10 * time.Millisecond)
+		if err := op(); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		m, err := s.ModTime()
+		if err != nil {
+			t.Fatalf("%s: ModTime: %v", step, err)
+		}
+		if m <= last {
+			t.Errorf("%s did not move ModTime (%d -> %d)", step, last, m)
+		}
+		last = m
+	}
+
+	bump("add", func() error { _, _, err := s.Add("x", task.Do); return err })
+	bump("second add", func() error { _, _, err := s.Add("y", task.Do); return err })
+	bump("space new", func() error { _, err := s.NewSpace("other"); return err })
+	bump("space use", func() error { _, err := s.UseSpace("other"); return err })
+	bump("space rm", func() error { _, err := s.RemoveSpace("other", false); return err })
+}
+
 // rawFile decodes the data file as plain JSON, for assertions about the shape
 // on disk rather than the shape in memory.
 func rawFile(t *testing.T, path string) map[string]any {

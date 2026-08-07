@@ -338,16 +338,27 @@ type redactedError struct {
 func (e *redactedError) Error() string { return e.msg }
 func (e *redactedError) Unwrap() error { return e.err }
 
-// ModTime returns the data file's mtime, or the zero time if it does not exist.
+// ModTime returns the newest mtime across the data file and the spaces
+// directory, or zero if neither exists. It is the TUI's only change signal,
+// polled every couple of seconds, so it must stay cheap — two stats — while
+// still moving on every kind of write: a task mutation lands a rename inside
+// the spaces directory, which bumps the directory's mtime; a space created,
+// removed, or renamed changes the directory listing, likewise; and a `space
+// use` or consent change rewrites the manifest itself. The one thing it no
+// longer sees is an in-place hand edit of a space file, which was never the
+// contract.
 func (s *Store) ModTime() (mtime int64, err error) {
-	fi, err := os.Stat(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
+	for _, p := range []string{s.path, spacesDir(s.path)} {
+		fi, serr := os.Stat(p)
+		if errors.Is(serr, os.ErrNotExist) {
+			continue
+		}
+		if serr != nil {
+			return 0, serr
+		}
+		mtime = max(mtime, fi.ModTime().UnixNano())
 	}
-	if err != nil {
-		return 0, err
-	}
-	return fi.ModTime().UnixNano(), nil
+	return mtime, nil
 }
 
 // Load reads this Store's space without taking the write lock.
