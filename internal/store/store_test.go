@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -475,6 +476,143 @@ func TestMigrationClearsDebrisOfACrashedMigration(t *testing.T) {
 	work := rawSpace(t, path, "work")
 	if id, _ := work["next_id"].(float64); int(id) != 3 {
 		t.Errorf("work next_id = %v, want the monolith's state (3), not the debris", work["next_id"])
+	}
+}
+
+// One corrupt space file must cost that one space, not the document — that is
+// the point of the split. The others keep working, the broken one is listed
+// rather than hidden, no write touches its file, and removing it with force
+// is the recovery affordance.
+func TestCorruptSpaceFileDegradesGracefully(t *testing.T) {
+	s := testStore(t)
+	if _, _, err := s.Add("keep", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.NewSpace("broken"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.InSpace("broken").Add("doomed", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	brokenPath := filepath.Join(spacesDir(s.Path()), encodeSpaceFilename("broken"))
+	if err := os.WriteFile(brokenPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The healthy space still loads, and the listing shows both — a space
+	// silently missing from the picker is how loss goes unnoticed.
+	d, err := s.Load()
+	if err != nil {
+		t.Fatalf("the healthy space should load: %v", err)
+	}
+	if len(d.AllSpaces) != 2 {
+		t.Fatalf("AllSpaces = %+v, want both spaces listed", d.AllSpaces)
+	}
+	if !d.AllSpaces[0].Unreadable || d.AllSpaces[0].Name != "broken" {
+		t.Errorf("AllSpaces[0] = %+v, want broken marked unreadable", d.AllSpaces[0])
+	}
+
+	// Resolving the broken space names the real problem, not a typo hunt.
+	if _, err := s.InSpace("broken").Load(); err == nil || !strings.Contains(err.Error(), "unreadable") {
+		t.Errorf("loading the broken space = %v, want an unreadable error", err)
+	}
+	if _, _, err := s.InSpace("broken").Add("x", task.Do); err == nil {
+		t.Error("mutating an unreadable space should fail")
+	}
+
+	// A write to the healthy space leaves the corrupt bytes exactly as they
+	// are: they may be recoverable by hand, and nothing may foreclose that.
+	if _, _, err := s.Add("more", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(brokenPath)
+	if err != nil {
+		t.Fatalf("a write removed the unreadable file: %v", err)
+	}
+	if string(after) != "{not json" {
+		t.Errorf("a write altered the unreadable file: %q", after)
+	}
+
+	// Removal needs force, and even then the file is renamed, not deleted.
+	if _, err := s.RemoveSpace("broken", false); err == nil {
+		t.Error("removing an unreadable space without force should fail")
+	}
+	removed, err := s.RemoveSpace("broken", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed.Unreadable || removed.Name != "broken" {
+		t.Errorf("removed = %+v, want the unreadable space", removed)
+	}
+	if _, err := os.Stat(brokenPath); !os.IsNotExist(err) {
+		t.Error("the unreadable file is still in the spaces directory")
+	}
+	if bak, err := os.ReadFile(brokenPath + ".bak"); err != nil || string(bak) != "{not json" {
+		t.Errorf("the unreadable file should survive as .bak: %q, %v", bak, err)
+	}
+	if d, err := s.Load(); err != nil || len(d.AllSpaces) != 1 {
+		t.Errorf("after removal: %+v, %v; want one healthy space", d.AllSpaces, err)
+	}
+}
+
+// A corrupt file behind the *current* space must fail loudly, not quietly
+// repair Current toward some other space — the user has to be told the space
+// they work in needs attention.
+func TestCorruptCurrentSpaceStaysCurrent(t *testing.T) {
+	s := testStore(t)
+	if _, _, err := s.Add("x", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.NewSpace("other"); err != nil {
+		t.Fatal(err)
+	}
+	defaultPath := filepath.Join(spacesDir(s.Path()), encodeSpaceFilename(defaultSpace))
+	if err := os.WriteFile(defaultPath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Load(); err == nil || !strings.Contains(err.Error(), "unreadable") {
+		t.Errorf("bare Load = %v, want the unreadable error for the current space", err)
+	}
+	if _, err := s.InSpace("other").Load(); err != nil {
+		t.Errorf("the other space should still load: %v", err)
+	}
+	// A write elsewhere must not move Current off the broken space.
+	if _, _, err := s.InSpace("other").Add("y", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if cur, _ := rawFile(t, s.Path())["current"].(string); cur != defaultSpace {
+		t.Errorf("current = %q; a write repaired it away from the unreadable space", cur)
+	}
+}
+
+// Even with every space unreadable the document still answers what it can:
+// the listing, and both consent readers.
+func TestAllSpacesCorruptStillListsAndAnswersConsent(t *testing.T) {
+	s := testStore(t)
+	if _, _, err := s.Add("x", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetMCPEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	defaultPath := filepath.Join(spacesDir(s.Path()), encodeSpaceFilename(defaultSpace))
+	if err := os.WriteFile(defaultPath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	infos, err := s.ListSpaces()
+	if err != nil {
+		t.Fatalf("ListSpaces with every space corrupt: %v", err)
+	}
+	if len(infos) != 1 || !infos[0].Unreadable {
+		t.Errorf("infos = %+v, want the one unreadable space", infos)
+	}
+	if on, err := s.MCPEnabled(); err != nil || !on {
+		t.Errorf("MCPEnabled = %v, %v; consent must stay readable", on, err)
+	}
+	if _, err := s.Load(); err == nil {
+		t.Error("loading an unreadable space should still fail")
 	}
 }
 

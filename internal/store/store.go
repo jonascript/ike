@@ -113,7 +113,11 @@ type File struct {
 	// corrupt lists spaces whose files could not be parsed, by display name.
 	// They are absent from Spaces and from rawSpace, so no write can touch
 	// their files; reads surface them instead of failing the whole document.
-	corrupt map[string]error
+	corrupt map[string]corruptSpace
+	// removeCorrupt names files in the spaces directory that RemoveSpace,
+	// with force, has condemned. The only way an unreadable space's file is
+	// ever touched, and even then it is renamed to .bak rather than deleted.
+	removeCorrupt []string
 	// standalone marks a Store opened directly on a single space file — an
 	// export handed to --file. The document then has exactly that space,
 	// writes go back to the same file, and space lifecycle operations refuse.

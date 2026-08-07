@@ -171,7 +171,13 @@ func readTree(path string) (File, error) {
 	// unreadable there is nothing to repair toward, and Current is left alone
 	// so the listing still says which space was current.
 	if _, ok := f.Spaces[f.Current]; !ok && len(f.Spaces) > 0 {
-		f.Current = slices.Min(slices.Collect(maps.Keys(f.Spaces)))
+		// A current that names an *unreadable* space is not dangling, and is
+		// deliberately left alone: repairing it away would have the next bare
+		// `ike list` quietly show some other space instead of saying, loudly,
+		// that the one the user works in needs attention.
+		if _, _, isCorrupt := f.corruptNamed(f.Current); !isCorrupt {
+			f.Current = slices.Min(slices.Collect(maps.Keys(f.Spaces)))
+		}
 	}
 	return f, nil
 }
@@ -210,20 +216,20 @@ func readSpaces(path string, f *File) error {
 		}
 		b, err := os.ReadFile(filepath.Join(dir, fname))
 		if err != nil {
-			f.markCorrupt(derived, err)
+			f.markCorrupt(derived, fname, err)
 			continue
 		}
 		var sf spaceFile
 		if err := json.Unmarshal(b, &sf); err != nil {
-			f.markCorrupt(derived, err)
+			f.markCorrupt(derived, fname, err)
 			continue
 		}
 		if sf.Version < 1 || sf.Version > currentVersion {
-			f.markCorrupt(derived, fmt.Errorf("unsupported version %d (expected %d)", sf.Version, currentVersion))
+			f.markCorrupt(derived, fname, fmt.Errorf("unsupported version %d (expected %d)", sf.Version, currentVersion))
 			continue
 		}
 		if sf.Name == "" {
-			f.markCorrupt(derived, errors.New("space file has no name"))
+			f.markCorrupt(derived, fname, errors.New("space file has no name"))
 			continue
 		}
 		// The embedded name is canonical; the filename is derived from it and
@@ -232,7 +238,7 @@ func readSpaces(path string, f *File) error {
 		// filename wins, the other is surfaced rather than silently shadowed,
 		// and — being corrupt — its file can never be written or deleted.
 		if prior, dup := f.fileFor[sf.Name]; dup {
-			f.markCorrupt(derived, fmt.Errorf("%s and %s both claim the space %q; %s wins", prior, fname, sf.Name, prior))
+			f.markCorrupt(derived, fname, fmt.Errorf("%s and %s both claim the space %q; %s wins", prior, fname, sf.Name, prior))
 			continue
 		}
 		d := sf.Data
@@ -267,11 +273,34 @@ func readOrphanSpaces(path string) (File, bool, error) {
 	return f, true, nil
 }
 
-func (f *File) markCorrupt(name string, err error) {
+// corruptSpace is one unreadable space: which file it is stuck in, and why.
+type corruptSpace struct {
+	file string // filename within the spaces directory
+	err  error
+}
+
+func (f *File) markCorrupt(name, file string, err error) {
 	if f.corrupt == nil {
-		f.corrupt = map[string]error{}
+		f.corrupt = map[string]corruptSpace{}
 	}
-	f.corrupt[name] = err
+	f.corrupt[name] = corruptSpace{file: file, err: err}
+}
+
+// corruptNamed looks name up among the unreadable spaces, resolving the way
+// resolve does: empty means current, and a case-insensitive match counts.
+func (f *File) corruptNamed(name string) (string, corruptSpace, bool) {
+	if name == "" {
+		name = f.Current
+	}
+	if cs, ok := f.corrupt[name]; ok {
+		return name, cs, true
+	}
+	for have, cs := range f.corrupt {
+		if strings.EqualFold(have, name) {
+			return have, cs, true
+		}
+	}
+	return "", corruptSpace{}, false
 }
 
 // readDocFlags reads only the document file's manifest-level fields. The
@@ -463,6 +492,14 @@ func writeTree(path string, f *File) error {
 		if caseOnly {
 			continue
 		}
+		if err := os.Rename(full, full+".bak"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	// Files condemned by RemoveSpace on an unreadable space — the one write
+	// ever aimed at a corrupt file, and it too is a rename to .bak.
+	for _, fname := range f.removeCorrupt {
+		full := filepath.Join(dir, fname)
 		if err := os.Rename(full, full+".bak"); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

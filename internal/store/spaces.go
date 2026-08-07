@@ -33,6 +33,11 @@ type SpaceInfo struct {
 	Active   int    `json:"active"`
 	Archived int    `json:"archived"`
 	Current  bool   `json:"current"`
+	// Unreadable marks a space whose file exists but cannot be parsed. It is
+	// listed rather than hidden — a space silently missing from every picker
+	// is how data loss goes unnoticed — but its counts are necessarily zero
+	// and resolving it fails.
+	Unreadable bool `json:"unreadable,omitempty"`
 }
 
 // resolve returns the space an operation should act on, and its canonical name:
@@ -57,6 +62,15 @@ func (f *File) resolve(name string) (string, *Data, error) {
 			return have, d, nil
 		}
 	}
+	// A space whose file exists but cannot be parsed gets its own answer:
+	// "no space named X" would send someone hunting for a typo when the real
+	// problem is a file needing recovery — and the difference matters, because
+	// every *other* space still works.
+	if have, cs, ok := f.corruptNamed(name); ok {
+		return "", nil, fmt.Errorf(
+			"space %q is unreadable (%v); other spaces are unaffected — recover %s or remove the space with `ike space rm %q --force`",
+			have, cs.err, cs.file, have)
+	}
 	return "", nil, fmt.Errorf("no space named %q", name)
 }
 
@@ -78,7 +92,7 @@ func (f *File) dataFor(name string, d *Data) Data {
 // than in map order so a picker, `ike space list`, and the TUI's next/previous
 // keys all agree on what "the space after this one" means.
 func (f *File) spaceInfos() []SpaceInfo {
-	out := make([]SpaceInfo, 0, len(f.Spaces))
+	out := make([]SpaceInfo, 0, len(f.Spaces)+len(f.corrupt))
 	for _, name := range slices.Sorted(maps.Keys(f.Spaces)) {
 		d := f.Spaces[name]
 		out = append(out, SpaceInfo{
@@ -88,6 +102,16 @@ func (f *File) spaceInfos() []SpaceInfo {
 			Current:  name == f.Current,
 		})
 	}
+	// Unreadable spaces are listed too: a space quietly missing from every
+	// picker is how data loss goes unnoticed until far too late.
+	for _, name := range slices.Sorted(maps.Keys(f.corrupt)) {
+		out = append(out, SpaceInfo{
+			Name:       name,
+			Current:    name == f.Current,
+			Unreadable: true,
+		})
+	}
+	slices.SortFunc(out, func(a, b SpaceInfo) int { return strings.Compare(a.Name, b.Name) })
 	return out
 }
 
@@ -229,6 +253,23 @@ func (s *Store) RemoveSpace(name string, force bool) (SpaceInfo, error) {
 	_, err := s.mutateFile(func(f *File) error {
 		if err := f.checkLifecycle("remove a space"); err != nil {
 			return err
+		}
+		// Removing an unreadable space is the recovery affordance: nothing
+		// else may touch its file, so without this the only cleanup would be
+		// deleting the file by hand. It requires force the way a non-empty
+		// space does — the file may hold every task the space ever had — and
+		// like every removal it renames to .bak rather than deleting.
+		if have, cs, ok := f.corruptNamed(name); ok && name != "" {
+			if !force {
+				return fmt.Errorf("%q is unreadable (%v); removing it discards whatever its file still holds — pass force to confirm", have, cs.err)
+			}
+			removed = SpaceInfo{Name: have, Current: have == f.Current, Unreadable: true}
+			f.removeCorrupt = append(f.removeCorrupt, cs.file)
+			delete(f.corrupt, have)
+			if f.Current == have && len(f.Spaces) > 0 {
+				f.Current = slices.Min(slices.Collect(maps.Keys(f.Spaces)))
+			}
+			return nil
 		}
 		canonical, d, err := f.resolve(name)
 		if err != nil {
