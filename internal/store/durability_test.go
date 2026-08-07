@@ -102,24 +102,28 @@ func TestWriteDoesNotUsePredictableTempName(t *testing.T) {
 	}
 }
 
-// Losing the data file used to mean hand-editing JSON or starting over.
+// Losing the data used to mean hand-editing JSON or starting over. Since the
+// split into per-space files the backup lives beside each space's file — a
+// task mutation touches one space, so that is the file whose previous state
+// needs preserving.
 func TestWriteKeepsABackupOfThePreviousContents(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tasks.json")
+	spacePath := filepath.Join(spacesDir(path), encodeSpaceFilename(defaultSpace))
 	s := OpenAt(path)
 
 	if _, _, err := s.Add("first", task.Do); err != nil {
 		t.Fatal(err)
 	}
 	// No backup yet: there was nothing to preserve before the first write.
-	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+	if _, err := os.Stat(spacePath + ".bak"); !os.IsNotExist(err) {
 		t.Errorf("unexpected backup after the first write: %v", err)
 	}
 
 	if _, _, err := s.Add("second", task.Do); err != nil {
 		t.Fatal(err)
 	}
-	bak, err := os.ReadFile(path + ".bak")
+	bak, err := os.ReadFile(spacePath + ".bak")
 	if err != nil {
 		t.Fatalf("no backup after the second write: %v", err)
 	}
@@ -130,12 +134,27 @@ func TestWriteKeepsABackupOfThePreviousContents(t *testing.T) {
 		t.Error("backup holds the new state, not the previous one")
 	}
 	// The backup is as private as the data file.
-	fi, err := os.Stat(path + ".bak")
+	fi, err := os.Stat(spacePath + ".bak")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := fi.Mode().Perm(); got != dataFileMode {
 		t.Errorf("backup mode = %#o, want %#o", got, dataFileMode)
+	}
+
+	// The manifest gets the same treatment when it is the thing that changed.
+	if _, err := s.NewSpace("other"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UseSpace("other"); err != nil {
+		t.Fatal(err)
+	}
+	mbak, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("no manifest backup after a document-level change: %v", err)
+	}
+	if !strings.Contains(string(mbak), `"current": "default"`) {
+		t.Errorf("manifest backup does not hold the previous state: %s", mbak)
 	}
 }
 

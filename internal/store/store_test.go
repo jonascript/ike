@@ -2,10 +2,8 @@ package store
 
 import (
 	"encoding/json"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -241,42 +239,43 @@ func onDiskVersion(t *testing.T, path string) int {
 	return int(v)
 }
 
-// rawSpace returns one space's body from the file on disk.
+// rawSpace returns one space's body from its file on disk.
 func rawSpace(t *testing.T, path, name string) map[string]any {
 	t.Helper()
-	spaces, ok := rawFile(t, path)["spaces"].(map[string]any)
-	if !ok {
-		t.Fatalf("%s has no spaces object", path)
-	}
-	body, ok := spaces[name].(map[string]any)
-	if !ok {
-		t.Fatalf("%s has no space %q (spaces: %v)", path, name, slices.Sorted(maps.Keys(spaces)))
-	}
-	return body
+	return rawFile(t, filepath.Join(spacesDir(path), encodeSpaceFilename(name)))
 }
 
 func TestFileFormat(t *testing.T) {
 	s := testStore(t)
 	s.Add("x", task.Do)
 
+	// The manifest holds the document-level fields, and deliberately no
+	// "spaces" key: a version-4 binary must refuse it on the version check,
+	// not decode an empty matrix it was about to overwrite.
 	m := rawFile(t, s.Path())
-	for _, k := range []string{"version", "current", "spaces"} {
+	for _, k := range []string{"version", "current"} {
 		if _, ok := m[k]; !ok {
-			t.Errorf("file missing top-level key %q", k)
+			t.Errorf("manifest missing top-level key %q", k)
 		}
 	}
-	// The matrix itself sits one level down, under its space.
+	for _, k := range []string{"spaces", "tasks", "next_id"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("manifest should not hold key %q", k)
+		}
+	}
+	// The matrix lives in the space's own file, which is self-describing —
+	// the same shape `ike space export` writes.
 	body := rawSpace(t, s.Path(), defaultSpace)
-	for _, k := range []string{"next_id", "tasks"} {
+	for _, k := range []string{"version", "name", "next_id", "tasks"} {
 		if _, ok := body[k]; !ok {
-			t.Errorf("space missing key %q", k)
+			t.Errorf("space file missing key %q", k)
 		}
 	}
-	// The fields derived from the document on every read describe the file, not
-	// the matrix, and must never be written into a space.
-	for _, k := range []string{"space", "spaces", "mcp_enabled", "version"} {
+	// The derived fields describe the document, not the matrix, and the
+	// consent flags must have no way into a file that export can copy.
+	for _, k := range []string{"space", "spaces", "all_spaces", "current", "mcp_enabled", "agent_enabled"} {
 		if _, ok := body[k]; ok {
-			t.Errorf("space should not persist key %q", k)
+			t.Errorf("space file should not persist key %q", k)
 		}
 	}
 }
@@ -333,6 +332,113 @@ func TestUpgradesSingleMatrixFile(t *testing.T) {
 	}
 	if enabled, _ := rawFile(t, path)["mcp_enabled"].(bool); !enabled {
 		t.Error("mcp_enabled should be a document-level key after the upgrade")
+	}
+}
+
+// The v4→v5 migration happens on the first write, never on read, and the
+// monolith survives it twice over: as the rolling .bak of the manifest that
+// replaced it, and as a one-time .pre-v5.bak that nothing ever overwrites.
+func TestMigrationSplitsMonolithOnFirstWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	v4 := `{
+	  "version": 4,
+	  "current": "work",
+	  "mcp_enabled": true,
+	  "spaces": {
+	    "work": {"next_id": 2, "tasks": [{"id": 1, "title": "a", "quadrant": 1, "rank": 1024}]},
+	    "personal": {"next_id": 1, "tasks": []}
+	  }
+	}`
+	if err := os.WriteFile(path, []byte(v4), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := OpenAt(path)
+
+	// Reads serve the old layout indefinitely and write nothing.
+	if _, err := s.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if v := onDiskVersion(t, path); v != 4 {
+		t.Errorf("a read migrated the file to version %d", v)
+	}
+	if _, err := os.Stat(spacesDir(path)); !os.IsNotExist(err) {
+		t.Error("a read created the spaces directory")
+	}
+
+	// The first mutation migrates the whole document.
+	if _, _, err := s.InSpace("personal").Add("x", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if v := onDiskVersion(t, path); v != currentVersion {
+		t.Errorf("on-disk version = %d, want %d", v, currentVersion)
+	}
+	m := rawFile(t, path)
+	if _, ok := m["spaces"]; ok {
+		t.Error("the manifest still holds a spaces key")
+	}
+	if cur, _ := m["current"].(string); cur != "work" {
+		t.Errorf("current = %q, want %q preserved", cur, "work")
+	}
+	if on, _ := m["mcp_enabled"].(bool); !on {
+		t.Error("mcp_enabled should survive the migration")
+	}
+	work := rawSpace(t, path, "work")
+	if tasks, _ := work["tasks"].([]any); len(tasks) != 1 {
+		t.Errorf("work tasks = %v, want the monolith's task", work["tasks"])
+	}
+	personal := rawSpace(t, path, "personal")
+	if tasks, _ := personal["tasks"].([]any); len(tasks) != 1 {
+		t.Errorf("personal tasks = %v, want the added task", personal["tasks"])
+	}
+
+	// The pre-migration monolith is kept, byte for byte, and a later write
+	// does not touch it — the rolling .bak is clobbered by the very next
+	// document-level change, so this copy is the durable escape hatch.
+	bak, err := os.ReadFile(path + preV5BackupSuffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(bak) != v4 {
+		t.Errorf("pre-v5 backup = %s, want the original monolith", bak)
+	}
+	if _, _, err := s.Add("later", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	bak2, _ := os.ReadFile(path + preV5BackupSuffix)
+	if string(bak2) != v4 {
+		t.Error("a later write rewrote the pre-v5 backup")
+	}
+}
+
+// A migration that crashed before its commit point — the manifest write —
+// leaves space files beside a still-authoritative monolith. The next
+// migration must clear them, or a space deleted since the crash would
+// resurrect beside the real ones.
+func TestMigrationClearsDebrisOfACrashedMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	v4 := `{"version": 4, "current": "work",
+	  "spaces": {"work": {"next_id": 2, "tasks": [{"id": 1, "title": "real", "quadrant": 1, "rank": 1024}]}}}`
+	if err := os.WriteFile(path, []byte(v4), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(spacesDir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := `{"version": 5, "name": "deleted-since", "next_id": 9, "tasks": []}`
+	staleWork := `{"version": 5, "name": "work", "next_id": 9, "tasks": []}`
+	os.WriteFile(filepath.Join(spacesDir(path), "deleted-since.json"), []byte(stale), 0o600)
+	os.WriteFile(filepath.Join(spacesDir(path), "work.json"), []byte(staleWork), 0o600)
+
+	s := OpenAt(path)
+	if _, _, err := s.Add("x", task.Do); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(spacesDir(path), "deleted-since.json")); !os.IsNotExist(err) {
+		t.Error("crash debris survived the migration and resurrected a space")
+	}
+	work := rawSpace(t, path, "work")
+	if id, _ := work["next_id"].(float64); int(id) != 3 {
+		t.Errorf("work next_id = %v, want the monolith's state (3), not the debris", work["next_id"])
 	}
 }
 

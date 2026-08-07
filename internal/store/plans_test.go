@@ -54,17 +54,24 @@ func TestPlanBodyStaysOutOfTheDataFile(t *testing.T) {
 		s.Add("filler", task.Schedule)
 	}
 
-	b, err := os.ReadFile(p)
+	spacePath := filepath.Join(spacesDir(p), encodeSpaceFilename(defaultSpace))
+	for _, f := range []string{p, spacePath} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "Ship it.") {
+			t.Errorf("the plan body reached %s; it belongs in the sidecar, "+
+				"or every undo snapshot carries a copy of it", f)
+		}
+	}
+	// The stamp, by contrast, must be there — it is what marks the task planned.
+	b, err := os.ReadFile(spacePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), "Ship it.") {
-		t.Error("the plan body reached tasks.json; it belongs in the sidecar, " +
-			"or every undo snapshot carries a copy of it")
-	}
-	// The stamp, by contrast, must be there — it is what marks the task planned.
 	if !strings.Contains(string(b), "plan_at") {
-		t.Error("the PlanAt stamp should persist in the data file")
+		t.Error("the PlanAt stamp should persist in the space file")
 	}
 }
 

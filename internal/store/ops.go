@@ -239,12 +239,16 @@ func (s *Store) SetMCPEnabled(on bool) (changed bool, err error) {
 }
 
 // MCPEnabled reports whether the MCP server may serve this file.
+//
+// It reads the document file alone rather than the whole tree: consent is a
+// property of the document, and `ike mcp status` must keep answering when a
+// space file — even every space file — cannot be parsed.
 func (s *Store) MCPEnabled() (bool, error) {
-	f, err := readTree(s.path)
+	m, err := readDocFlags(s.path)
 	if err != nil {
 		return false, s.redact(err)
 	}
-	return f.MCPEnabled, nil
+	return m.MCPEnabled, nil
 }
 
 // SetAgentEnabled turns delegation on or off for this file, and reports
@@ -272,13 +276,14 @@ func (s *Store) SetAgentEnabled(on bool) (changed bool, err error) {
 	return changed, err
 }
 
-// AgentEnabled reports whether ike may run an agent against this file.
+// AgentEnabled reports whether ike may run an agent against this file. Like
+// MCPEnabled, it reads the document file alone.
 func (s *Store) AgentEnabled() (bool, error) {
-	f, err := readTree(s.path)
+	m, err := readDocFlags(s.path)
 	if err != nil {
 		return false, s.redact(err)
 	}
-	return f.AgentEnabled, nil
+	return m.AgentEnabled, nil
 }
 
 // Rename changes a task's title.

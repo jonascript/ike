@@ -11,7 +11,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -47,17 +46,20 @@ const lockRetryInterval = 25 * time.Millisecond
 // currentVersion is the schema version this build writes. Version 2 added
 // per-task ranks and the undo stack; version 3 stopped copying the whole
 // archive into every snapshot; version 4 wrapped the matrix in a document that
-// can hold several of them. Older files are upgraded in memory on read and
-// persisted at the current version by the next write.
+// can hold several of them; version 5 split the document across files — a
+// manifest at the data path and one file per space beside it — so one corrupt
+// space cannot take the others with it. Older files are upgraded in memory on
+// read and persisted at the current version by the next write.
 //
-// Both 3 and 4 are real bumps rather than fields added in place — the approach
+// 3, 4, and 5 are real bumps rather than fields added in place — the approach
 // taken for `redo` — because the failure modes differ. Losing redo history to
 // an older binary is harmless; an older binary reading a v3 file would find no
 // "archive" in a snapshot, decode it as empty, and wipe the archive on the next
 // undo, and one reading a v4 file would find no top-level "tasks" at all and
-// see an empty matrix it was about to overwrite. Better that it refuse the file
-// outright.
-const currentVersion = 4
+// see an empty matrix it was about to overwrite. A v5 manifest deliberately has
+// no "spaces" key for the same reason: a v4 binary must refuse it outright
+// rather than decode an empty matrix it was about to make permanent.
+const currentVersion = 5
 
 // defaultSpace names the space a single-matrix file is upgraded into, and the
 // one a fresh file starts with.
@@ -477,23 +479,10 @@ func (s *Store) mutateFile(fn func(*File) error) (file File, err error) {
 	if err = fn(&file); err != nil {
 		return File{}, err
 	}
-	if err = writeFileAtomic(s.path, file); err != nil {
+	if err = writeTree(s.path, &file); err != nil {
 		return File{}, s.redact(err)
 	}
 	return file, nil
-}
-
-func writeFileAtomic(path string, doc File) error {
-	b, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-
-	if err := writeBackup(path); err != nil {
-		return err
-	}
-	return writeBytesAtomic(path, ".tasks-*.json", b)
 }
 
 // writeBytesAtomic replaces path with b, atomically and durably. It is the body

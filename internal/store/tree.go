@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -271,4 +272,259 @@ func (f *File) markCorrupt(name string, err error) {
 		f.corrupt = map[string]error{}
 	}
 	f.corrupt[name] = err
+}
+
+// readDocFlags reads only the document file's manifest-level fields. The
+// consent readers use it so that `ike mcp status` and `ike agent status` keep
+// answering whatever state the space files are in. Every version carries these
+// fields at the top level, so no version branch is needed; a standalone space
+// file simply has neither flag, which is the "consent never travels" guarantee
+// again.
+func readDocFlags(path string) (manifest, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return manifest{}, nil
+	}
+	if err != nil {
+		return manifest{}, err
+	}
+	var m struct {
+		manifest
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return manifest{}, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if m.Name != "" {
+		// A space file, not a document. Its shape has no consent fields, but a
+		// crafted one could carry them anyway; a standalone open never has
+		// consent, so neither may the flags read from one.
+		return manifest{Version: m.Version}, nil
+	}
+	return m.manifest, nil
+}
+
+// preV5BackupSuffix names the one-time copy of a pre-split monolith, taken
+// before the first version-5 write replaces it. The rolling .bak is clobbered
+// by the very next manifest write, so without this the pre-migration state
+// would survive exactly one mutation.
+const preV5BackupSuffix = ".pre-v5.bak"
+
+// writeTree persists the document f to disk: each space to its own file, the
+// manifest last among updates, deletions after that. It is the commit step of
+// mutateFile and nothing else calls it, so the lock, the fresh re-read, and
+// the gate still have exactly one implementation.
+//
+// Writes are confined to what changed: a space whose marshaling matches the
+// bytes it was read from is left alone. Fault tolerance is the point — a bug
+// in one space's mutation can no longer rewrite the others — and it is also
+// what keeps the ordering rule cheap. That rule: creations and updates first,
+// then the manifest, then deletions. Every crash window then leaves a state
+// readTree already repairs — at worst an extra space file the manifest does
+// not point to, or a dangling Current.
+//
+// A space readTree marked corrupt is in neither f.Spaces nor f.rawSpace, so
+// this function cannot write to, over, or instead of its file: the
+// reads-never-overwrite-what-they-cannot-parse rule, extended per file.
+func writeTree(path string, f *File) error {
+	if f.standalone {
+		return writeStandalone(path, f)
+	}
+	dir := spacesDir(path)
+
+	// Migrating from a monolith. The monolith stays authoritative until the
+	// manifest write below replaces it: a crash anywhere before that leaves a
+	// valid pre-v5 file the next reader upgrades again, and an older binary
+	// running mid-window still sees a document it understands.
+	migrating := f.onDiskVersion >= 1 && f.onDiskVersion < currentVersion
+	if migrating {
+		if err := writeFileOnce(path+preV5BackupSuffix, f.rawDoc); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(dir, dataDirMode); err != nil {
+		return err
+	}
+	// MkdirAll leaves an existing directory's mode alone; the listing of
+	// space names is as personal as the spaces, so tighten it the way a
+	// skipped write tightens a file.
+	_ = os.Chmod(dir, dataDirMode)
+	if migrating {
+		// Any space file already present is debris of a migration that crashed
+		// before its commit point. Cleared rather than trusted, or a space
+		// deleted since that crash would resurrect beside the real ones.
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if _, ok := decodeSpaceFilename(e.Name()); ok && !strings.HasPrefix(e.Name(), ".") {
+				if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	// Creations and updates, in sorted order so a partial failure is
+	// reproducible.
+	for _, name := range slices.Sorted(maps.Keys(f.Spaces)) {
+		b, err := marshalJSONFile(spaceFile{Version: currentVersion, Name: name, Data: *f.Spaces[name]})
+		if err != nil {
+			return err
+		}
+		canonical := encodeSpaceFilename(name)
+		target := filepath.Join(dir, canonical)
+		dirty := !bytes.Equal(b, f.rawSpace[name])
+		if dirty {
+			if err := writeBackup(target); err != nil {
+				return err
+			}
+			if err := writeBytesAtomic(target, ".space-*.json", b); err != nil {
+				return err
+			}
+		} else {
+			// The monolith relied on every write replacing the inode to
+			// tighten a file left world-readable by an older build. A skipped
+			// write must keep that promise by hand.
+			_ = os.Chmod(target, dataFileMode)
+		}
+		// The filename is derived from the canonical embedded name; a file
+		// read from anywhere else — a hand copy, a filesystem that normalized
+		// the encoding — is moved home. Best effort: a repair must never be
+		// the reason a mutation fails, and a straggler is surfaced by the
+		// duplicate-name handling on the next read rather than lost.
+		if prior := f.fileFor[name]; prior != "" && prior != canonical {
+			priorPath := filepath.Join(dir, prior)
+			switch {
+			case sameFile(priorPath, target):
+				// A case-insensitive filesystem: one file, wrongly-cased
+				// entry. Renaming it in place fixes the case.
+				_ = os.Rename(priorPath, target)
+			case dirty:
+				// target was written fresh above; the old file is superseded.
+				_ = os.Rename(priorPath, priorPath+".bak")
+			default:
+				_ = os.Rename(priorPath, target)
+			}
+		}
+	}
+
+	// The manifest, only if it changed. During a migration it always has —
+	// the monolith's bytes are not a manifest — and this write is the commit
+	// point that retires the monolith.
+	mb, err := marshalJSONFile(manifest{
+		Version:      currentVersion,
+		Current:      f.Current,
+		MCPEnabled:   f.MCPEnabled,
+		AgentEnabled: f.AgentEnabled,
+	})
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(mb, f.rawDoc) {
+		if err := writeBackup(path); err != nil {
+			return err
+		}
+		if err := writeBytesAtomic(path, ".tasks-*.json", mb); err != nil {
+			return err
+		}
+	} else {
+		_ = os.Chmod(path, dataFileMode)
+	}
+
+	// Deletions last, so a crash strands an extra file rather than losing one.
+	// Deleting is renaming to .bak: removal and backup in one atomic step,
+	// which keeps ".bak is the recovery path for a removal" true now that the
+	// document file no longer holds spaces at all.
+	for _, name := range slices.Sorted(maps.Keys(f.rawSpace)) {
+		if _, live := f.Spaces[name]; live {
+			continue
+		}
+		fname := f.fileFor[name]
+		if fname == "" {
+			continue
+		}
+		full := filepath.Join(dir, fname)
+		// A rename that changed only the name's case shares one file between
+		// the old entry and the new on a case-insensitive filesystem — the
+		// update above already wrote the new content into it, and "deleting"
+		// the old entry here would delete the file it just wrote. Fix the
+		// entry's case instead.
+		caseOnly := false
+		for live := range f.Spaces {
+			target := filepath.Join(dir, encodeSpaceFilename(live))
+			if strings.EqualFold(fname, encodeSpaceFilename(live)) && sameFile(full, target) {
+				_ = os.Rename(full, target)
+				caseOnly = true
+				break
+			}
+		}
+		if caseOnly {
+			continue
+		}
+		if err := os.Rename(full, full+".bak"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeStandalone writes the one space of a Store opened directly on a space
+// file back to that file. The lifecycle operations refuse on a standalone
+// document, so exactly one space can be here.
+func writeStandalone(path string, f *File) error {
+	if len(f.Spaces) != 1 {
+		return fmt.Errorf("standalone %s must hold exactly one space, has %d", path, len(f.Spaces))
+	}
+	for name, d := range f.Spaces {
+		b, err := marshalJSONFile(spaceFile{Version: currentVersion, Name: name, Data: *d})
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(b, f.rawSpace[name]) {
+			return nil
+		}
+		if err := writeBackup(path); err != nil {
+			return err
+		}
+		return writeBytesAtomic(path, ".space-*.json", b)
+	}
+	return nil
+}
+
+// writeFileOnce creates path with b unless it already exists. O_EXCL rather
+// than a stat-then-write, so two racing migrations cannot both think they
+// wrote first.
+func writeFileOnce(path string, b []byte) error {
+	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, dataFileMode)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := out.Write(b); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// sameFile reports whether two paths name one file, which on a
+// case-insensitive filesystem two differently-cased names do.
+func sameFile(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }

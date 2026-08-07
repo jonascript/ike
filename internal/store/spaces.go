@@ -113,8 +113,20 @@ func (f *File) checkNewName(name string) error {
 // The space operations below are deliberately **not undoable**. History is
 // per-space, so a document-level change has no stack to record onto, and a
 // stack that could resurrect a removed space would have to hold the whole
-// matrix. `tasks.json.bak` remains the recovery path for a removal, which is
-// why RemoveSpace makes the caller say the name and confirm the loss.
+// matrix. The space file renamed to `.bak` remains the recovery path for a
+// removal, which is why RemoveSpace makes the caller say the name and confirm
+// the loss.
+
+// checkLifecycle refuses a space lifecycle change on a standalone document —
+// a single exported space file opened with --file. Such a file can hold
+// exactly one space, so every operation that would change the set of spaces
+// has no way to persist its result.
+func (f *File) checkLifecycle(op string) error {
+	if f.standalone {
+		return fmt.Errorf("cannot %s: this is a single exported space, not a full data file; import it first with `ike space import`", op)
+	}
+	return nil
+}
 
 // ListSpaces describes every space in the file, sorted by name.
 func (s *Store) ListSpaces() ([]SpaceInfo, error) {
@@ -138,6 +150,9 @@ func (s *Store) NewSpace(name string) (Data, error) {
 	name = strings.TrimSpace(name)
 	var out Data
 	_, err := s.mutateFile(func(f *File) error {
+		if err := f.checkLifecycle("create a space"); err != nil {
+			return err
+		}
 		if err := f.checkNewName(name); err != nil {
 			return err
 		}
@@ -174,6 +189,9 @@ func (s *Store) UseSpace(name string) (Data, error) {
 func (s *Store) RenameSpace(from, to string) error {
 	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
 	_, err := s.mutateFile(func(f *File) error {
+		if err := f.checkLifecycle("rename a space"); err != nil {
+			return err
+		}
 		canonical, d, err := f.resolve(from)
 		if err != nil {
 			return err
@@ -209,6 +227,9 @@ func (s *Store) RemoveSpace(name string, force bool) (SpaceInfo, error) {
 	name = strings.TrimSpace(name)
 	var removed SpaceInfo
 	_, err := s.mutateFile(func(f *File) error {
+		if err := f.checkLifecycle("remove a space"); err != nil {
+			return err
+		}
 		canonical, d, err := f.resolve(name)
 		if err != nil {
 			return err

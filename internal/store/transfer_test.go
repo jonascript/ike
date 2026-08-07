@@ -217,14 +217,31 @@ func TestImportAllTakesEverySpace(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "all.json")
-	// Export cannot write more than one space, so copy the whole source file:
-	// that is what "another machine's data file" looks like anyway.
+	// Export cannot write more than one space, so copy the whole source tree —
+	// manifest plus spaces directory — which is what "another machine's data
+	// file" looks like since the split.
 	b, err := os.ReadFile(src.Path())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(out, b, 0o600); err != nil {
 		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(spacesDir(src.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(spacesDir(out), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		sb, err := os.ReadFile(filepath.Join(spacesDir(src.Path()), e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(spacesDir(out), e.Name()), sb, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// Rename the local space out of the way, so importing "default" has a name
